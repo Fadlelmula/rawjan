@@ -556,6 +556,27 @@ pub fn integrity_check(conn: &Connection) -> AppResult<String> {
     Ok(result)
 }
 
+/// Count transactions whose ledger legs do not balance: every non-cancelled
+/// transaction must satisfy `SUM(debits) = SUM(credits)` in base units. This is
+/// the standing invariant of the double-entry ledger; a non-zero count means
+/// data was corrupted outside the write paths.
+pub fn unbalanced_transaction_count(conn: &Connection) -> AppResult<i64> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM (
+             SELECT le.transaction_id
+             FROM ledger_entries le
+             JOIN transactions t ON t.id = le.transaction_id
+             WHERE t.status <> 'cancelled'
+             GROUP BY le.transaction_id
+             HAVING COALESCE(SUM(CASE WHEN le.entry_type = 'debit' THEN le.base_amount_minor ELSE 0 END), 0)
+                 <> COALESCE(SUM(CASE WHEN le.entry_type = 'credit' THEN le.base_amount_minor ELSE 0 END), 0)
+         )",
+        [],
+        |r| r.get(0),
+    )?;
+    Ok(count)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -704,6 +725,71 @@ mod tests {
         assert!(
             duplicate.is_err(),
             "duplicate same-day valuations must be rejected"
+        );
+    }
+
+    #[test]
+    fn ledger_invariant_detects_unbalanced_entries() {
+        let mut conn = open_test();
+        let (tenant, user) = seed_if_empty(&mut conn).unwrap();
+        let now = crate::dates::now_iso();
+        conn.execute(
+            "INSERT INTO accounts (id, tenant_id, user_id, name, type, currency_code, is_liability, is_liquid,
+                opening_balance_minor, created_at, updated_at)
+             VALUES ('acct', ?1, ?2, 'Main bank', 'bank', 'QAR', 0, 1, 0, ?3, ?3)",
+            rusqlite::params![tenant, user, now],
+        )
+        .unwrap();
+        let category: String = conn
+            .query_row(
+                "SELECT id FROM categories WHERE tenant_id = ?1 AND name = 'Groceries'",
+                [&tenant],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let created = crate::services::tx::create_transaction(
+            &conn,
+            &tenant,
+            &user,
+            &crate::services::tx::TxInput {
+                kind: "expense".into(),
+                status: Some("posted".into()),
+                data_status: None,
+                description: "Test expense".into(),
+                payee: None,
+                notes: None,
+                date: "2026-11-14".into(),
+                time: None,
+                account_id: "acct".into(),
+                counter_account_id: None,
+                category_id: Some(category),
+                income_source_id: None,
+                amount: "250.00".into(),
+                currency: None,
+                counter_amount: None,
+                fx_rate: None,
+                splits: None,
+                tags: None,
+                external_ref: None,
+                direction: None,
+            },
+        )
+        .unwrap();
+
+        // The write path keeps the ledger balanced.
+        assert_eq!(unbalanced_transaction_count(&conn).unwrap(), 0);
+
+        // Corrupt one leg directly, as an external tool or a bad migration would.
+        conn.execute(
+            "UPDATE ledger_entries SET base_amount_minor = base_amount_minor + 1
+             WHERE transaction_id = ?1 AND entry_type = 'debit'",
+            [&created.id],
+        )
+        .unwrap();
+        assert_eq!(
+            unbalanced_transaction_count(&conn).unwrap(),
+            1,
+            "the invariant check must find transactions whose legs do not balance"
         );
     }
 }

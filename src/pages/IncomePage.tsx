@@ -7,6 +7,7 @@ import {
   ArrowUpRight,
   ChartColumn,
   Coins,
+  Download,
   Pencil,
   Plus,
   Wallet,
@@ -159,6 +160,11 @@ export function IncomePage() {
     queryFn: () => api.incomeReport(from, to),
   });
   const report = reportQuery.data;
+  const exportMutation = useMutation({
+    mutationFn: () => api.exportReportCsv("income", from, to),
+    onSuccess: (result) => toast.success(`Saved ${result.fileName} to the exports folder`),
+    onError: (error) => toast.error("Export failed", errorMessage(error)),
+  });
 
   const activeAccounts = useMemo(() => accounts.filter((account) => account.isActive), [accounts]);
   const incomeCategories = useMemo(
@@ -286,6 +292,14 @@ export function IncomePage() {
               {option.label}
             </Button>
           ))}
+          <Button
+            size="sm"
+            variant="secondary"
+            loading={exportMutation.isPending}
+            onClick={() => exportMutation.mutate()}
+          >
+            <Download className="h-3.5 w-3.5" /> Export CSV
+          </Button>
         </div>
       </div>
 

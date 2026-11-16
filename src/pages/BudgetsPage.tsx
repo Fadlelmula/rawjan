@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import clsx from "clsx";
 import {
   AlertTriangle,
+  Download,
   Pause,
   Pencil,
   Play,
@@ -94,7 +95,9 @@ function progressTone(percent: number, overBudget: boolean): string {
 }
 
 export function BudgetsPage() {
-  const { app, currencies, categories } = useBootstrap();
+  const { app, currencies, categories, settings } = useBootstrap();
+  const cycleDay = Number(settings.budget_cycle_start_day ?? 28);
+  const cycleEndDay = cycleDay === 1 ? 31 : cycleDay - 1;
   const queryClient = useQueryClient();
   const toast = useToast();
   const [modalOpen, setModalOpen] = useState(false);
@@ -234,6 +237,11 @@ export function BudgetsPage() {
   };
 
   const budgets = budgetsQuery.data ?? [];
+  const exportMutation = useMutation({
+    mutationFn: () => api.exportReportCsv("budgets", null, null),
+    onSuccess: (result) => toast.success(`Saved ${result.fileName} to the exports folder`),
+    onError: (error) => toast.error("Export failed", errorMessage(error)),
+  });
 
   return (
     <div className="space-y-4 rawjan-enter">
@@ -248,9 +256,19 @@ export function BudgetsPage() {
             minus refunds. Pending and reversed rows never count.
           </p>
         </div>
-        <Button size="sm" variant="primary" onClick={openCreate}>
-          <Plus className="h-3.5 w-3.5" /> New budget
-        </Button>
+        <div className="flex items-center gap-1.5">
+          <Button
+            size="sm"
+            variant="secondary"
+            loading={exportMutation.isPending}
+            onClick={() => exportMutation.mutate()}
+          >
+            <Download className="h-3.5 w-3.5" /> Export CSV
+          </Button>
+          <Button size="sm" variant="primary" onClick={openCreate}>
+            <Plus className="h-3.5 w-3.5" /> New budget
+          </Button>
+        </div>
       </div>
 
       {budgetsQuery.isError ? (
@@ -267,7 +285,7 @@ export function BudgetsPage() {
         <EmptyState
           icon={<Target className="h-5 w-5" />}
           title="No budgets yet"
-          description="Create a spending plan around your salary cycle. Start with the 28→27 cycle, then allocate expense categories. Nothing is pre-filled."
+          description={`Create a spending plan around your salary cycle. Start with the ${cycleDay}→${cycleEndDay} cycle, then allocate expense categories. Nothing is pre-filled.`}
           action={
             <Button size="sm" variant="primary" onClick={openCreate}>
               <Plus className="h-3.5 w-3.5" /> Create first budget
@@ -356,7 +374,11 @@ export function BudgetsPage() {
             </Field>
             <Field
               label="Cycle start day"
-              hint={form.periodType === "cycle_month" ? "Default 28 → runs 28th to 27th." : "Used only by salary cycles."}
+              hint={
+                form.periodType === "cycle_month"
+                  ? `Default ${cycleDay} → runs day ${cycleDay} to day ${cycleEndDay}.`
+                  : "Used only by salary cycles."
+              }
             >
               <input
                 type="number"

@@ -14,4 +14,5 @@ pub mod journal;
 pub mod lab;
 pub mod liabilities;
 pub mod networth;
+pub mod report_csv;
 pub mod tx;

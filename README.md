@@ -152,6 +152,9 @@ database and its backups.
 - **Backup:** a page-copy of the encrypted database, written to `<data dir>\backups`, then reopened and
   checked with `PRAGMA integrity_check` before it is recorded. Files outside the managed backup folder
   cannot be deleted from the app.
+- **Report exports:** the analytics, income, budgets and transactions reports can be exported as CSV
+  from their pages. Files are written to `<data dir>\exports` and contain exactly the displayed
+  values.
 - **Export:** tenant rows serialized to JSON and encrypted with Argon2id (19,456 KiB, t=2, p=1) and
   ChaCha20-Poly1305. The passphrase is never stored. Exports are written to `<data dir>\exports` as
   `.rawjan` files. Exports created before the rename (`.aureqis`) can still be verified and decrypted.
@@ -186,10 +189,11 @@ Supported formats: CSV, XLSX (first worksheet), OFX and QIF.
 
 ## Testing
 
-Backend: 126 Rust tests covering strict money parsing and overflow, ledger balance, reversals and
-atomic edits, budgets (including FX-unavailable budgets), goals, investments, liabilities, net
-worth, analytics counting and category percentages, income reporting, calendar, journal, health,
-FI, lab, imports, encrypted exports, schema migrations and legacy export compatibility.
+Backend: 134 Rust tests covering strict money parsing and overflow, ledger balance and the standing
+ledger invariant, atomic edits and reversals, budgets (including FX-unavailable budgets), goals,
+investments, liabilities, net worth, analytics counting and category percentages, income reporting,
+calendar, journal, health, FI, lab, imports (including workbook expansion limits), CSV report
+exports, encrypted exports, schema migrations and legacy export compatibility.
 
 ```bat
 scripts\cargo-env.bat test

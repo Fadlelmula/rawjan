@@ -108,17 +108,28 @@ pub struct SystemHealth {
     pub integrity: String,
     pub encrypted: bool,
     pub data_dir: String,
+    /// Transactions whose ledger legs do not balance (debits ≠ credits).
+    pub unbalanced_transactions: i64,
+    pub ledger_balanced: bool,
 }
 
 #[tauri::command]
 pub fn health(state: State<'_, AppState>) -> AppResult<SystemHealth> {
     let conn = state.conn();
     let integrity = db::integrity_check(&conn)?;
+    let unbalanced_transactions = db::unbalanced_transaction_count(&conn)?;
     Ok(SystemHealth {
-        status: if integrity == "ok" { "ok" } else { "degraded" }.to_string(),
+        status: if integrity == "ok" && unbalanced_transactions == 0 {
+            "ok"
+        } else {
+            "degraded"
+        }
+        .to_string(),
         integrity,
         encrypted: state.database_encrypted,
         data_dir: state.data_dir.display().to_string(),
+        unbalanced_transactions,
+        ledger_balanced: unbalanced_transactions == 0,
     })
 }
 
@@ -578,6 +589,25 @@ pub fn list_audit_events(
         })
     })?;
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+#[tauri::command]
+pub fn export_report_csv(
+    state: State<'_, AppState>,
+    report: String,
+    from: Option<String>,
+    to: Option<String>,
+) -> AppResult<crate::services::report_csv::ReportExportResult> {
+    let conn = state.conn();
+    let dir = state.data_dir.join("exports");
+    crate::services::report_csv::export_report(
+        &conn,
+        &state.tenant_id,
+        &dir,
+        &report,
+        from.as_deref(),
+        to.as_deref(),
+    )
 }
 
 // ---------------------------------------------------------------------------

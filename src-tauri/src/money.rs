@@ -165,6 +165,18 @@ pub fn convert_minor(
         .ok_or_else(|| AppError::Validation("Converted amount is too large.".into()))
 }
 
+/// Multiply and add in one checked step: `value * factor + addend`.
+/// Projection loops use this so extreme assumptions produce a validation
+/// error instead of a decimal overflow panic.
+pub fn checked_growth_step(value: Decimal, factor: Decimal, addend: Decimal) -> AppResult<Decimal> {
+    value
+        .checked_mul(factor)
+        .and_then(|product| product.checked_add(addend))
+        .ok_or_else(|| {
+            AppError::Validation("The projection exceeds the supported numeric range.".into())
+        })
+}
+
 /// Sum minor-unit amounts, reporting overflow instead of wrapping.
 pub fn checked_sum(values: impl Iterator<Item = i64>) -> AppResult<i64> {
     let mut total = 0i64;

@@ -1,11 +1,12 @@
 import { useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import clsx from "clsx";
-import { ArrowDownRight, ArrowUpRight, ChartColumn, Users } from "lucide-react";
+import { ArrowDownRight, ArrowUpRight, ChartColumn, Download, Users } from "lucide-react";
 import { api, errorMessage } from "@/lib/api";
 import { useBootstrap } from "@/lib/bootstrap";
 import { formatDate, money } from "@/lib/display";
+import { useToast } from "@/components/Toast";
 import { Alert, Badge, Button, EmptyState, Panel, SectionLabel, Spinner } from "@/components/ui";
 
 function firstDayOfMonth(date: Date, offset: number): string {
@@ -66,6 +67,12 @@ export function AnalyticsPage() {
   });
 
   const report = reportQuery.data;
+  const toast = useToast();
+  const exportMutation = useMutation({
+    mutationFn: () => api.exportReportCsv("analytics", from, to),
+    onSuccess: (result) => toast.success(`Saved ${result.fileName} to the exports folder`),
+    onError: (error) => toast.error("Export failed", errorMessage(error)),
+  });
   const maxMonth = useMemo(() => {
     if (!report) return 0;
     return report.months.reduce(
@@ -108,6 +115,14 @@ export function AnalyticsPage() {
               {option.label}
             </Button>
           ))}
+          <Button
+            size="sm"
+            variant="secondary"
+            loading={exportMutation.isPending}
+            onClick={() => exportMutation.mutate()}
+          >
+            <Download className="h-3.5 w-3.5" /> Export CSV
+          </Button>
         </div>
       </div>
 

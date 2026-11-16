@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery } from "@tanstack/react-query";
 import clsx from "clsx";
 import {
   ArrowDownLeft,
@@ -8,6 +8,7 @@ import {
   ChevronLeft,
   ChevronRight,
   CircleAlert,
+  Download,
   Filter,
   Plus,
   Receipt,
@@ -18,6 +19,7 @@ import {
 import { api, errorMessage } from "@/lib/api";
 import type { TransactionFilters } from "@/lib/api";
 import { useBootstrap } from "@/lib/bootstrap";
+import { useToast } from "@/components/Toast";
 import { amountTone, formatDate, signedAmount, STATUS_LABELS } from "@/lib/display";
 import { useComposer } from "@/components/ComposerContext";
 import { TransactionDetailModal, statusTone } from "@/components/TransactionDetail";
@@ -119,6 +121,13 @@ export function TransactionsPage() {
     setPage(0);
   };
 
+  const toast = useToast();
+  const exportMutation = useMutation({
+    mutationFn: () => api.exportReportCsv("transactions", from || null, to || null),
+    onSuccess: (result) => toast.success(`Saved ${result.fileName} to the exports folder`),
+    onError: (error) => toast.error("Export failed", errorMessage(error)),
+  });
+
   return (
     <div className="space-y-4 rawjan-enter">
       <div className="flex flex-wrap items-end justify-between gap-3">
@@ -134,9 +143,19 @@ export function TransactionsPage() {
             reversals so the audit trail stays intact.
           </p>
         </div>
-        <Button size="sm" variant="primary" onClick={() => openComposer("expense")}>
-          <Plus className="h-3.5 w-3.5" /> New entry
-        </Button>
+        <div className="flex items-center gap-1.5">
+          <Button
+            size="sm"
+            variant="secondary"
+            loading={exportMutation.isPending}
+            onClick={() => exportMutation.mutate()}
+          >
+            <Download className="h-3.5 w-3.5" /> Export CSV
+          </Button>
+          <Button size="sm" variant="primary" onClick={() => openComposer("expense")}>
+            <Plus className="h-3.5 w-3.5" /> New entry
+          </Button>
+        </div>
       </div>
 
       <Panel className="overflow-hidden">

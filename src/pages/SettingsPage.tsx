@@ -10,6 +10,7 @@ import {
   KeyRound,
   Plus,
   RefreshCw,
+  Scale,
   Settings2,
   ShieldCheck,
   SlidersHorizontal,
@@ -104,6 +105,16 @@ function VaultTab() {
               label="SQLite integrity"
               value={health.data?.integrity ?? "—"}
               tone={health.data?.status === "ok" ? "green" : "amber"}
+            />
+            <InfoRow
+              icon={<Scale className="h-3.5 w-3.5 text-sage-400" />}
+              label="Ledger balance"
+              value={
+                health.data?.ledgerBalanced
+                  ? "Balanced (debits = credits)"
+                  : `${health.data?.unbalancedTransactions ?? "?"} unbalanced transaction(s)`
+              }
+              tone={health.data?.ledgerBalanced ? "green" : "red"}
             />
             <InfoRow
               icon={<KeyRound className="h-3.5 w-3.5 text-zinc-500" />}

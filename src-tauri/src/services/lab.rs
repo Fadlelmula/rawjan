@@ -158,10 +158,16 @@ pub fn compound(
         contributed: format_amount(initial, exp),
     });
 
+    let growth_factor = Decimal::ONE.checked_add(monthly_rate).ok_or_else(|| {
+        AppError::Validation("The projection exceeds the supported numeric range.".into())
+    })?;
+
     for year in 1..=input.years {
         for _ in 0..12 {
-            balance = balance * (Decimal::ONE + monthly_rate) + contribution;
-            contributed += contribution;
+            balance = crate::money::checked_growth_step(balance, growth_factor, contribution)?;
+            contributed = contributed.checked_add(contribution).ok_or_else(|| {
+                AppError::Validation("The projection exceeds the supported numeric range.".into())
+            })?;
         }
         let balance_minor = minor_of(balance, exp)?;
         let contributed_minor = minor_of(contributed, exp)?;
@@ -176,7 +182,7 @@ pub fn compound(
 
     let final_minor = minor_of(balance, exp)?;
     let contributed_minor = minor_of(contributed, exp)?;
-    let growth_minor = final_minor - contributed_minor;
+    let growth_minor = crate::money::checked_diff(final_minor, contributed_minor)?;
 
     Ok(CompoundReport {
         currency: currency.clone(),
@@ -248,15 +254,21 @@ pub fn loan(conn: &Connection, tenant_id: &str, input: &LoanInput) -> AppResult<
             (payment_minor - interest).clamp(0, current_balance)
         };
         let paid = if is_last {
-            principal_minor + interest
+            crate::money::checked_sum([principal_minor, interest].into_iter())?
         } else {
             payment_minor
         };
-        balance_minor_dec -= Decimal::from(principal_minor);
+        balance_minor_dec = balance_minor_dec
+            .checked_sub(Decimal::from(principal_minor))
+            .ok_or_else(|| {
+                AppError::Validation(
+                    "The loan schedule exceeds the supported numeric range.".into(),
+                )
+            })?;
         let remaining = minor_of(balance_minor_dec.max(Decimal::ZERO), exp)?;
 
-        total_interest += interest;
-        total_paid += paid;
+        total_interest = crate::money::checked_sum([total_interest, interest].into_iter())?;
+        total_paid = crate::money::checked_sum([total_paid, paid].into_iter())?;
 
         rows.push(LoanRow {
             month,
@@ -358,6 +370,19 @@ mod tests {
             annual_return: rate.into(),
             years,
         }
+    }
+
+    #[test]
+    fn extreme_compound_growth_errors_instead_of_panicking() {
+        let (conn, tenant) = setup();
+        // Near-i64::MAX balances compounding at 100% for 60 years overflow the
+        // supported decimal range; expect an error, not a panic.
+        let result = compound(
+            &conn,
+            &tenant,
+            &compound_input("92233720368547758.07", "92233720368547758.07", "100", 60),
+        );
+        assert!(result.is_err());
     }
 
     #[test]

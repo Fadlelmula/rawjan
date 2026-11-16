@@ -76,19 +76,28 @@ tests exist.
 | Client-side numeric coercion (NaN days, silent `|| 28`) | validation added on Accounts, Budgets, Liabilities, Settings, FI inputs |
 | Unused dependencies and dead code | `base64`, `regex`, `serial_test` removed; three dead `pub` functions removed |
 
-Verification after the round: 126 Rust tests (including a v1→v2 migration test with real rows),
-10 Vitest tests, strict `tsc --noEmit`, production build, `cargo fmt --check`, `cargo clippy
---all-targets` without errors.
+## Completed in the roadmap round
+
+| Item | Fix |
+| --- | --- |
+| FI/lab projection loops could panic on decimal overflow | loops use `money::checked_growth_step` and checked accumulation; extreme assumptions return validation errors (regression tests in `fi.rs`/`lab.rs`). Progress percentages use bounded i128 minor-unit math |
+| No standing ledger invariant check | `db::unbalanced_transaction_count` verifies `SUM(debits) = SUM(credits)` per transaction; shown as "Ledger balance" in Settings → Vault & data and folded into health status (test corrupts a leg and detects it) |
+| XLSX zip-bomb exposure (RA-023) | the ZIP central directory is parsed before the workbook is materialized; declared expansion over 512 MB is rejected (dependency-free, tested with a synthetic archive) |
+| Split rounding coverage thin | deterministic property sweep (40 generated 3-way splits) plus a cross-currency split case asserting split bases sum exactly to the transaction base |
+| No report export | CSV export for analytics, income, budgets and transactions (`services/report_csv.rs`), written to the managed exports folder with correct CSV escaping (tested); "Export CSV" buttons on the four report pages |
+| No CI pipeline | `.github/workflows/ci.yml` runs typecheck, frontend tests, production build, `cargo fmt --check`, clippy and `cargo test` on Windows (mirrors local checks; first GitHub run pending) |
+| Budget cycle text hardcoded "28→27" | derived from the `budget_cycle_start_day` setting |
+
+Verification after the round: 134 Rust tests, 10 Vitest tests, strict `tsc --noEmit`, production
+build, `cargo fmt --check`, `cargo clippy --all-targets` without errors.
 
 ## Known risks and debt
 
 ### Financial integrity
-- FI/lab projection loops still multiply decimals over long horizons; extreme inputs can overflow a
-  decimal and panic instead of returning a validation error.
-- No automated invariant check that an existing vault's journals all balance (`SUM(debit) =
-  SUM(credit)`); invariants are enforced at write time and covered by unit tests.
-- Split allocation assigns the rounding remainder to the last leg (documented); property-style tests
-  over random splits and rates are still thin.
+- Split allocation assigns the rounding remainder to the last leg (documented, covered by property
+  tests now).
+- FI/lab projection loops use checked arithmetic; assumptions are user-entered percentages and
+  amounts, bounded by validation.
 
 ### Data protection
 - Restore is a documented manual file swap. There is no guided, verified restore flow.
@@ -104,7 +113,8 @@ Verification after the round: 126 Rust tests (including a v1→v2 migration test
 - The main JS bundle is ~609 kB before gzip; pages are not code-split.
 
 ### Engineering quality
-- No CI pipeline yet (rustfmt, clippy, tests, typecheck, frontend tests, build).
+- A CI workflow (`.github/workflows/ci.yml`) now runs the full check suite on Windows; its first
+  GitHub run is pending, so it is not yet a proven gate.
 - `cargo fmt` is clean tree-wide; `cargo clippy --all-targets` still reports pre-existing
   dead-code warnings (`period_range`, `format_scaled`, unused struct fields) and a few style lints
   (complex types, too many arguments).

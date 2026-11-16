@@ -184,6 +184,49 @@ struct ParsedFile {
 // Preview
 // ---------------------------------------------------------------------------
 
+/// Sum of the uncompressed member sizes declared in a ZIP central directory.
+/// Used to bound XLSX parsing before the workbook is materialized in memory.
+/// Returns `None` when the bytes are not a readable ZIP directory.
+fn zip_uncompressed_size(bytes: &[u8]) -> Option<u64> {
+    // Locate the End Of Central Directory record (signature PK\x05\x06),
+    // scanning backwards; it lies within the last 66 KB of the file.
+    let scan_floor = bytes.len().saturating_sub(66_000);
+    let mut eocd = None;
+    let mut pos = bytes.len().checked_sub(22)?;
+    loop {
+        if bytes[pos..].starts_with(&[0x50, 0x4b, 0x05, 0x06]) {
+            eocd = Some(pos);
+            break;
+        }
+        if pos == scan_floor {
+            break;
+        }
+        pos -= 1;
+    }
+    let eocd = eocd?;
+    let total_entries = u16::from_le_bytes([bytes[eocd + 10], bytes[eocd + 11]]) as usize;
+    let cd_offset = u32::from_le_bytes(bytes.get(eocd + 16..eocd + 20)?.try_into().ok()?) as usize;
+
+    let mut total = 0u64;
+    let mut cursor = cd_offset;
+    for _ in 0..total_entries {
+        if bytes.get(cursor..cursor + 4)? != [0x50, 0x4b, 0x01, 0x02] {
+            return None;
+        }
+        let uncompressed =
+            u32::from_le_bytes(bytes.get(cursor + 24..cursor + 28)?.try_into().ok()?) as u64;
+        let name_len = u16::from_le_bytes([bytes[cursor + 28], bytes[cursor + 29]]) as usize;
+        let extra_len = u16::from_le_bytes([bytes[cursor + 30], bytes[cursor + 31]]) as usize;
+        let comment_len = u16::from_le_bytes([bytes[cursor + 32], bytes[cursor + 33]]) as usize;
+        total = total.checked_add(uncompressed)?;
+        cursor = cursor.checked_add(46 + name_len + extra_len + comment_len)?;
+        if cursor > bytes.len() {
+            return None;
+        }
+    }
+    Some(total)
+}
+
 pub fn preview(
     conn: &Connection,
     tenant_id: &str,
@@ -230,6 +273,19 @@ pub fn preview(
     }
 
     let bytes = std::fs::read(path_ref)?;
+    // Bound XLSX expansion before the workbook is materialized: the 64 MB file
+    // cap does not limit what a compressed workbook expands into.
+    if format == "xlsx" {
+        const MAX_UNCOMPRESSED_BYTES: u64 = 512 * 1024 * 1024;
+        match zip_uncompressed_size(&bytes) {
+            Some(size) if size > MAX_UNCOMPRESSED_BYTES => {
+                return Err(AppError::Validation(
+                    "That workbook expands to more than 512 MB and will not be read into memory. Split it into smaller files.".into(),
+                ));
+            }
+            _ => {}
+        }
+    }
     let file_hash = hex::encode(Sha256::digest(&bytes));
     let file_name = path_ref
         .file_name()
@@ -1956,5 +2012,54 @@ mod tests {
             .query_row("SELECT count(*) FROM ledger_entries", [], |row| row.get(0))
             .unwrap();
         assert_eq!(entries, 2);
+    }
+
+    /// Minimal ZIP directory declaring one member of `declared_uncompressed`
+    /// bytes: enough to exercise the expansion-size guard.
+    fn zip_stub(declared_uncompressed: u32) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        // Central directory file header (46 bytes, empty name/extra/comment).
+        bytes.extend_from_slice(&[0x50, 0x4b, 0x01, 0x02]);
+        bytes.extend_from_slice(&[0u8; 20]);
+        bytes.extend_from_slice(&declared_uncompressed.to_le_bytes());
+        bytes.extend_from_slice(&[0u8; 18]);
+        // End of central directory record (22 bytes).
+        bytes.extend_from_slice(&[0x50, 0x4b, 0x05, 0x06]);
+        bytes.extend_from_slice(&[0u8; 4]);
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&46u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes
+    }
+
+    #[test]
+    fn zip_expansion_is_measured_before_parsing() {
+        assert_eq!(
+            zip_uncompressed_size(&zip_stub(2_000_000_000)),
+            Some(2_000_000_000)
+        );
+        assert_eq!(zip_uncompressed_size(&zip_stub(100)), Some(100));
+        assert_eq!(zip_uncompressed_size(b"not a zip"), None);
+    }
+
+    #[test]
+    fn oversized_workbooks_are_rejected_before_parsing() {
+        let (conn, tenant, user, account_id) = setup();
+        let dir = std::env::temp_dir().join("rawjan-import-tests");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("{}-bomb.xlsx", uuid::Uuid::new_v4()));
+        std::fs::write(&path, zip_stub(2_000_000_000)).unwrap();
+        let error = preview(
+            &conn,
+            &tenant,
+            &user,
+            path.to_str().unwrap(),
+            "xlsx",
+            Some(&account_id),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("512 MB"));
     }
 }

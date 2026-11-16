@@ -65,6 +65,15 @@ fn parse_percent(label: &str, raw: &str) -> AppResult<Decimal> {
         .map_err(|_| AppError::Validation(format!("'{raw}' is not a valid {label}.")))
 }
 
+/// Whole percent of `part` in `whole`, computed in i128 on minor units so
+/// extreme values cannot overflow a decimal division. Clamped at i64::MAX.
+fn percent_of_minor(part: i64, whole: i64) -> i64 {
+    if whole <= 0 {
+        return 0;
+    }
+    (((part.max(0) as i128) * 100) / whole as i128).clamp(0, i64::MAX as i128) as i64
+}
+
 fn round_minor(value: Decimal, exp: u32) -> AppResult<i64> {
     amount_to_minor(value, exp)
 }
@@ -127,15 +136,7 @@ pub fn calculate(conn: &Connection, tenant_id: &str, input: &FiInput) -> AppResu
     let fi_value = annual / (withdrawal_rate / Decimal::from(100));
     let fi_minor = round_minor(fi_value, exp)?;
 
-    let progress = if fi_value > Decimal::ZERO {
-        ((current / fi_value) * Decimal::from(100))
-            .round_dp_with_strategy(0, RoundingStrategy::MidpointAwayFromZero)
-            .to_string()
-            .parse::<i64>()
-            .unwrap_or(0)
-    } else {
-        0
-    };
+    let progress = percent_of_minor(current_invested, fi_minor);
     let remaining_value = (fi_value - current).max(Decimal::ZERO);
     let remaining_minor = round_minor(remaining_value, exp)?;
 
@@ -153,7 +154,7 @@ pub fn calculate(conn: &Connection, tenant_id: &str, input: &FiInput) -> AppResu
         months_to_fi = Some(0);
     } else {
         for month in 1..=MAX_MONTHS {
-            balance = balance * monthly_factor + contribution;
+            balance = crate::money::checked_growth_step(balance, monthly_factor, contribution)?;
             if balance >= fi_value {
                 months_to_fi = Some(month);
                 break;
@@ -178,13 +179,7 @@ pub fn calculate(conn: &Connection, tenant_id: &str, input: &FiInput) -> AppResu
             };
             let coast_minor = round_minor(coast, exp)?;
             let progress = if coast > Decimal::ZERO {
-                Some(
-                    ((current / coast) * Decimal::from(100))
-                        .round_dp_with_strategy(0, RoundingStrategy::MidpointAwayFromZero)
-                        .to_string()
-                        .parse::<i64>()
-                        .unwrap_or(0),
-                )
+                Some(percent_of_minor(current_invested, coast_minor))
             } else {
                 None
             };
@@ -198,7 +193,7 @@ pub fn calculate(conn: &Connection, tenant_id: &str, input: &FiInput) -> AppResu
             let mut value = current;
             let months = years * 12;
             for _ in 0..months {
-                value = value * monthly_factor + contribution;
+                value = crate::money::checked_growth_step(value, monthly_factor, contribution)?;
             }
             Some(format_amount(round_minor(value, exp)?, exp))
         }
@@ -211,7 +206,8 @@ pub fn calculate(conn: &Connection, tenant_id: &str, input: &FiInput) -> AppResu
     for year in 0..=horizon_years {
         if year > 0 {
             for _ in 0..12 {
-                projected = projected * monthly_factor + contribution;
+                projected =
+                    crate::money::checked_growth_step(projected, monthly_factor, contribution)?;
             }
         }
         projection.push(FiYearPoint {
@@ -303,6 +299,28 @@ mod tests {
             inflation: inflation.into(),
             years_to_retirement: years,
         }
+    }
+
+    #[test]
+    fn extreme_assumptions_error_instead_of_panicking() {
+        let (conn, tenant) = setup();
+        // A near-i64::MAX balance growing at 100% real return for 80 years runs
+        // past the supported decimal range; the projection must report a
+        // validation error rather than panic or wrap.
+        let result = calculate(
+            &conn,
+            &tenant,
+            &input(
+                "1.00",
+                "4",
+                "92233720368547758.07",
+                "92233720368547758.07",
+                "100",
+                "0",
+                Some(80),
+            ),
+        );
+        assert!(result.is_err());
     }
 
     #[test]

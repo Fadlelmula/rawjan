@@ -688,6 +688,8 @@ export interface HealthReport {
   integrity: string;
   encrypted: boolean;
   dataDir: string;
+  unbalancedTransactions: number;
+  ledgerBalanced: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -836,6 +838,13 @@ export interface IncomeSourceInput {
   categoryId?: string | null;
   isActive?: boolean | null;
   notes?: string | null;
+}
+
+export interface ReportExportResult {
+  path: string;
+  fileName: string;
+  rowCount: number;
+  byteSize: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -1280,6 +1289,12 @@ export const api = {
     invoke<AnalyticsReport>("analytics_report", { from: from ?? null, to: to ?? null }),
   incomeReport: (from?: string | null, to?: string | null) =>
     invoke<IncomeReport>("income_report", { from: from ?? null, to: to ?? null }),
+  exportReportCsv: (report: string, from?: string | null, to?: string | null) =>
+    invoke<ReportExportResult>("export_report_csv", {
+      report,
+      from: from ?? null,
+      to: to ?? null,
+    }),
   monthCalendar: (month?: string | null) =>
     invoke<CalendarMonth>("month_calendar", { month: month ?? null }),
   listJournalEntries: (search?: string | null, limit = 200) =>

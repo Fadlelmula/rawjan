@@ -1689,6 +1689,148 @@ mod tests {
         assert_eq!(debits, 25000);
     }
 
+    /// Deterministic sweep: split totals must stay exact — the split rows sum
+    /// to the transaction amount and the ledger stays balanced for every case.
+    #[test]
+    fn split_allocations_stay_exact_across_generated_cases() {
+        let (conn, tenant, user, account, category) = setup();
+        let other: String = conn
+            .query_row(
+                "SELECT id FROM categories WHERE tenant_id = ?1 AND name = 'Dining & Cafés'",
+                [&tenant],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let mut state: u64 = 0xDEAD_BEEF_CAFE_F00D;
+        let mut next = move || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (state >> 33) as i64 % 500_000 + 1
+        };
+        for case in 0..40 {
+            let first = next();
+            let second = next();
+            let third = next();
+            let total = first + second + third;
+            let mut draft = input(&account, &category, &format_amount(total, 2));
+            draft.status = Some("draft".into());
+            draft.category_id = None;
+            draft.splits = Some(vec![
+                SplitInput {
+                    category_id: category.clone(),
+                    amount: format_amount(first, 2),
+                    note: None,
+                },
+                SplitInput {
+                    category_id: other.clone(),
+                    amount: format_amount(second, 2),
+                    note: None,
+                },
+                SplitInput {
+                    category_id: category.clone(),
+                    amount: format_amount(third, 2),
+                    note: None,
+                },
+            ]);
+            let created = create_transaction(&conn, &tenant, &user, &draft)
+                .unwrap_or_else(|error| panic!("case {case} failed: {error}"));
+
+            let (split_sum, base_amount): (i64, i64) = conn
+                .query_row(
+                    "SELECT COALESCE(SUM(s.base_amount_minor), 0), t.base_amount_minor
+                     FROM transaction_splits s
+                     JOIN transactions t ON t.id = s.transaction_id
+                     WHERE s.transaction_id = ?1
+                     GROUP BY t.id",
+                    [&created.id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(
+                split_sum, base_amount,
+                "case {case}: split bases must sum exactly"
+            );
+            assert_eq!(
+                crate::db::unbalanced_transaction_count(&conn).unwrap(),
+                0,
+                "case {case}: the ledger must stay balanced"
+            );
+            delete_draft(&conn, &tenant, &user, &created.id).unwrap();
+        }
+    }
+
+    /// Cross-currency splits assign the rounding remainder to the last leg; the
+    /// split base amounts must still sum exactly to the transaction base amount.
+    #[test]
+    fn cross_currency_split_bases_sum_exactly() {
+        let (conn, tenant, user, _account, category) = setup();
+        let other: String = conn
+            .query_row(
+                "SELECT id FROM categories WHERE tenant_id = ?1 AND name = 'Dining & Cafés'",
+                [&tenant],
+                |r| r.get(0),
+            )
+            .unwrap();
+        conn.execute(
+            "INSERT INTO accounts (id, tenant_id, user_id, name, type, currency_code, is_liability, is_liquid, opening_balance_minor, created_at, updated_at)
+             VALUES ('usd-acct', ?1, ?2, 'US bank', 'bank', 'USD', 0, 1, 0, ?3, ?3)",
+            params![tenant, user, now_iso()],
+        )
+        .unwrap();
+        // An awkward rate so per-leg rounding genuinely differs from the total.
+        let rate = crate::money::parse_rate("3.6403").unwrap();
+        crate::services::currency::add_manual_rate(
+            &conn,
+            &tenant,
+            "USD",
+            "QAR",
+            rate,
+            "2026-11-14",
+        )
+        .unwrap();
+
+        let mut draft = input("usd-acct", &category, "10.00");
+        draft.status = Some("draft".into());
+        draft.category_id = None;
+        draft.splits = Some(vec![
+            SplitInput {
+                category_id: category.clone(),
+                amount: "3.33".into(),
+                note: None,
+            },
+            SplitInput {
+                category_id: other.clone(),
+                amount: "3.33".into(),
+                note: None,
+            },
+            SplitInput {
+                category_id: category.clone(),
+                amount: "3.34".into(),
+                note: None,
+            },
+        ]);
+        let created = create_transaction(&conn, &tenant, &user, &draft).unwrap();
+
+        let (split_sum, base_amount): (i64, i64) = conn
+            .query_row(
+                "SELECT COALESCE(SUM(s.base_amount_minor), 0), t.base_amount_minor
+                 FROM transaction_splits s
+                 JOIN transactions t ON t.id = s.transaction_id
+                 WHERE s.transaction_id = ?1
+                 GROUP BY t.id",
+                [&created.id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(split_sum, base_amount);
+        assert_eq!(
+            base_amount, 3_640,
+            "10.00 USD at 3.6403 = 36.403 QAR = 3,640 minor"
+        );
+        assert_eq!(crate::db::unbalanced_transaction_count(&conn).unwrap(), 0);
+    }
+
     #[test]
     fn editing_a_draft_that_fails_validation_keeps_the_original() {
         let (conn, tenant, user, account, category) = setup();
