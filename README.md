@@ -7,6 +7,25 @@ bank connections.
 
 The visual language is dark, restrained and desktop-first, built around a red spider lily motif.
 
+**[Download the Windows installer](https://github.com/Fadlelmula/rawjan/releases/latest)** ·
+[Release notes](https://github.com/Fadlelmula/rawjan/releases/tag/v0.1.0) ·
+[Engineering audit & roadmap](docs/AUDIT.md)
+
+## Install
+
+1. Download `Rawjan_0.1.0_x64-setup.exe` from
+   [Releases](https://github.com/Fadlelmula/rawjan/releases/latest).
+2. Optionally verify it against the SHA-256 digest published in the release notes:
+
+   ```powershell
+   Get-FileHash .\Rawjan_0.1.0_x64-setup.exe -Algorithm SHA256
+   ```
+
+3. Run the installer. It installs per user and needs no administrator rights. The build is **not
+   code-signed**, so Windows SmartScreen may ask you to confirm before running it.
+4. On first launch Rawjan creates an encrypted vault and stores its key in Windows Credential
+   Manager. No account, sign-in or network connection is involved.
+
 ## Screenshots
 
 Every screenshot comes from a disposable demo vault, never a real ledger. The full set of 18 pages
@@ -58,7 +77,13 @@ These are shown honestly in the app instead of being faked:
   automatic posting. Recurring behaviour is not simulated.
 - **Statement reconciliation worksheet** — transactions can be marked reconciled one at a time; there is no
   side-by-side bank-statement matching screen yet.
+- **Income-source backfill** — a source can be attached while recording new income; existing entries
+  cannot be re-linked yet. Unlinked income is still counted and is reported separately instead of
+  being attributed to a guessed source.
 - **Cloud sync, multi-user UI, mobile** — single local user with tenant/user boundaries in the schema only.
+
+Remaining risks, limitations and the phased improvement plan are tracked in
+[docs/AUDIT.md](docs/AUDIT.md).
 
 ## Requirements
 
@@ -153,6 +178,8 @@ Supported formats: CSV, XLSX (first worksheet), OFX and QIF.
   with an explicit reason, because they need both sides of the movement.
 - Duplicate detection uses a hash of account, date, amount, description and kind. Duplicates are skipped
   by default; you can turn that off.
+- Amount cells treat currency codes, symbols and signs as decoration, but anything embedded inside
+  the number itself is rejected as a row issue instead of being cleaned into a different value.
 - A positive movement on a liability account is recorded as an adjustment, not invented income.
 - Imported rows become real posted or pending transactions in the ledger.
 - PDF is rejected with an honest explanation.
@@ -167,14 +194,16 @@ health, FI, lab, imports, encrypted exports and legacy export compatibility.
 scripts\cargo-env.bat test
 ```
 
-Frontend: Vitest covers the shared date and label helpers, plus a strict TypeScript check and a
-production build.
+Frontend: 10 Vitest tests covering the shared date and label helpers, plus a strict TypeScript check
+and a production build. Component and end-to-end tests have not been written yet.
 
 ```bat
 npm test
 npm run typecheck
 npm run build
 ```
+
+There is no CI pipeline yet; the checks above are what currently gates a change locally.
 
 ## Packaging
 
