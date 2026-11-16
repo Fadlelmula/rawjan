@@ -165,11 +165,16 @@ export function Modal({
   width?: "sm" | "md" | "lg" | "xl";
 }) {
   const dialogRef = useRef<HTMLDivElement>(null);
+  // Keep the latest onClose without re-subscribing the effect: callers pass an
+  // inline arrow, and re-running the effect on every parent render would steal
+  // focus from whatever the user is typing in.
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
   useEffect(() => {
     if (!open) return;
     const opener = document.activeElement as HTMLElement | null;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape") onCloseRef.current();
       // Keep Tab focus inside the dialog.
       if (event.key === "Tab" && dialogRef.current) {
         const focusable = Array.from(
@@ -197,9 +202,11 @@ export function Modal({
     return () => {
       document.removeEventListener("keydown", onKeyDown);
       document.body.style.overflow = previous;
+      // Runs only when the dialog actually closes (or unmounts), never on
+      // re-renders, so typing in a modal form keeps its focus.
       opener?.focus?.();
     };
-  }, [open, onClose]);
+  }, [open]);
 
   if (!open) return null;
 
