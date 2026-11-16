@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowRight, CircleAlert } from "lucide-react";
 import { api, errorMessage } from "@/lib/api";
 import type { TransactionInput } from "@/lib/api";
@@ -41,6 +41,7 @@ export function TransactionComposer({
   const [accountId, setAccountId] = useState("");
   const [counterAccountId, setCounterAccountId] = useState("");
   const [categoryId, setCategoryId] = useState("");
+  const [incomeSourceId, setIncomeSourceId] = useState("");
   const [amount, setAmount] = useState("");
   const [counterAmount, setCounterAmount] = useState("");
   const [fxRate, setFxRate] = useState("");
@@ -58,6 +59,7 @@ export function TransactionComposer({
     setAccountId(activeAccounts[0]?.id ?? "");
     setCounterAccountId("");
     setCategoryId("");
+    setIncomeSourceId("");
     setAmount("");
     setCounterAmount("");
     setFxRate("");
@@ -98,6 +100,28 @@ export function TransactionComposer({
     });
   }, [categoryOptions]);
 
+  const incomeSourcesQuery = useQuery({
+    queryKey: ["income-sources"],
+    queryFn: () => api.listIncomeSources(),
+    enabled: open && isIncome,
+  });
+  const incomeSources = useMemo(
+    () => (incomeSourcesQuery.data ?? []).filter((source) => source.isActive),
+    [incomeSourcesQuery.data],
+  );
+
+  const selectIncomeSource = (nextId: string) => {
+    setIncomeSourceId(nextId);
+    const source = incomeSources.find((candidate) => candidate.id === nextId);
+    if (!source) return;
+    if (source.categoryId && categoryOptions.some((category) => category.id === source.categoryId)) {
+      setCategoryId(source.categoryId);
+    }
+    if (source.accountId && activeAccounts.some((account) => account.id === source.accountId)) {
+      setAccountId(source.accountId);
+    }
+  };
+
   const mutation = useMutation({
     mutationFn: (input: TransactionInput) => api.createTransaction(input),
     onSuccess: async (result) => {
@@ -105,6 +129,7 @@ export function TransactionComposer({
         queryClient.invalidateQueries({ queryKey: ["bootstrap"] }),
         queryClient.invalidateQueries({ queryKey: ["transactions"] }),
         queryClient.invalidateQueries({ queryKey: ["account"] }),
+        queryClient.invalidateQueries({ queryKey: ["income"] }),
       ]);
       const detail = result.possibleDuplicateId
         ? "Saved, but a possible duplicate was detected. Review the ledger for repeats."
@@ -152,6 +177,7 @@ export function TransactionComposer({
       accountId,
       counterAccountId: needsCounter ? counterAccountId : null,
       categoryId: isTransfer ? null : categoryId || null,
+      incomeSourceId: isIncome ? incomeSourceId || null : null,
       amount: amount.trim(),
       currency: selectedAccount?.currency ?? app.primaryCurrency,
       counterAmount: crossCurrency ? counterAmount.trim() : null,
@@ -289,6 +315,31 @@ export function TransactionComposer({
               </Field>
             )}
           </div>
+
+          {isIncome ? (
+            <Field
+              label="Income source"
+              hint={
+                incomeSources.length === 0
+                  ? "No sources yet. Add one on the Income page to compare expected and received amounts."
+                  : "Optional. Links this entry to an income source for expected-versus-received reporting."
+              }
+            >
+              <select
+                className="rawjan-input"
+                value={incomeSourceId}
+                onChange={(event) => selectIncomeSource(event.target.value)}
+              >
+                <option value="">Unassigned income</option>
+                {incomeSources.map((source) => (
+                  <option key={source.id} value={source.id}>
+                    {source.name}
+                    {source.schedule ? ` · ${source.schedule}` : ""}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          ) : null}
 
           {crossCurrency ? (
             <div className="grid gap-3 sm:grid-cols-2">

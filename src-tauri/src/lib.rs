@@ -88,6 +88,7 @@ pub fn run() {
             api::capture_net_worth_snapshot,
             api::delete_net_worth_snapshot,
             api::analytics_report,
+            api::income_report,
             api::month_calendar,
             api::list_journal_entries,
             api::save_journal_entry,

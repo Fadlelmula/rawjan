@@ -57,7 +57,7 @@ const sections: NavSection[] = [
   {
     label: "Money",
     items: [
-      { to: "/income", label: "Income", icon: Coins, implemented: false },
+      { to: "/income", label: "Income", icon: Coins, implemented: true },
       { to: "/transactions", label: "Transactions", icon: ArrowLeftRight, implemented: true },
       { to: "/accounts", label: "Accounts", icon: Wallet, implemented: true },
       { to: "/budgets", label: "Budgets", icon: Target, implemented: true },

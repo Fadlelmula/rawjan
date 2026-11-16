@@ -342,7 +342,8 @@ export function DashboardPage() {
               <StatusLine label="Budgets & goals" state="Live" live />
               <StatusLine label="Investments & liabilities" state="Live" live />
               <StatusLine label="Net worth history" state="Live" live />
-              <StatusLine label="Imports & backups" state="Planned" />
+              <StatusLine label="Income reporting" state="Live" live />
+              <StatusLine label="Imports & backups" state="Live" live />
             </div>
             <div className="mt-3 text-[0.63rem] leading-relaxed text-zinc-600">
               Planned modules are visibly marked throughout the application. Nothing is presented as finished

@@ -8,6 +8,7 @@ pub mod fi;
 pub mod goals;
 pub mod health;
 pub mod imports;
+pub mod income;
 pub mod investments;
 pub mod journal;
 pub mod lab;

@@ -1,8 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
 import { Route, Routes } from "react-router-dom";
-import {
-  Coins,
-} from "lucide-react";
 import { api, errorMessage } from "@/lib/api";
 import { BootstrapProvider } from "@/lib/bootstrap";
 import { LilyMark } from "@/components/LilyMark";
@@ -11,6 +8,7 @@ import { Alert, Button } from "@/components/ui";
 import { Shell } from "@/components/Shell";
 import { DashboardPage } from "@/pages/DashboardPage";
 import { TransactionsPage } from "@/pages/TransactionsPage";
+import { IncomePage } from "@/pages/IncomePage";
 import { AccountsPage } from "@/pages/AccountsPage";
 import { BudgetsPage } from "@/pages/BudgetsPage";
 import { GoalsPage } from "@/pages/GoalsPage";
@@ -26,7 +24,6 @@ import { LabPage } from "@/pages/LabPage";
 import { ImportsPage } from "@/pages/ImportsPage";
 import { BackupsPage } from "@/pages/BackupsPage";
 import { SettingsPage } from "@/pages/SettingsPage";
-import { PlannedPage } from "@/pages/PlannedPage";
 
 export default function App() {
   const bootstrap = useQuery({
@@ -97,24 +94,7 @@ export default function App() {
             <Route path="liabilities" element={<LiabilitiesPage />} />
             <Route path="settings" element={<SettingsPage />} />
 
-            <Route
-              path="income"
-              element={
-                <PlannedPage
-                  eyebrow="Money in"
-                  title="Income"
-                  description="Understand what you earn, when it arrives and how reliable it is — without guessing at missing payouts."
-                  icon={Coins}
-                  features={[
-                    "Income sources with expected amounts, schedules and pay days",
-                    "Received-versus-expected tracking per source and period",
-                    "Recurring income linked to the real posted transactions",
-                    "Bonuses, freelance and irregular income kept separate from salary",
-                  ]}
-                  dependsOn="Depends on the ledger and income-source records, both already stored in the schema. The reporting interface is what remains."
-                />
-              }
-            />
+            <Route path="income" element={<IncomePage />} />
             <Route path="net-worth" element={<NetWorthPage />} />
             <Route path="analytics" element={<AnalyticsPage />} />
             <Route path="calendar" element={<CalendarPage />} />

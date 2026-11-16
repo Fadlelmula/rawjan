@@ -74,13 +74,13 @@ pub struct AnalyticsReport {
     pub payees: Vec<PayeeRow>,
 }
 
-struct MonthTotals {
-    income: i64,
-    expense: i64,
-    count: i64,
+pub(crate) struct MonthTotals {
+    pub(crate) income: i64,
+    pub(crate) expense: i64,
+    pub(crate) count: i64,
 }
 
-fn month_label(month: &str) -> String {
+pub(crate) fn month_label(month: &str) -> String {
     match NaiveDate::parse_from_str(&format!("{month}-01"), "%Y-%m-%d") {
         Ok(date) => date.format("%b %Y").to_string(),
         Err(_) => month.to_string(),
@@ -97,7 +97,7 @@ fn percent(part: i64, total: i64) -> i64 {
 /// Income and expense for each month. Only effective, non-reversed records count.
 /// Transfers, investment moves, openings and adjustments are excluded: they move
 /// value between accounts rather than describing income or spending.
-fn monthly_totals(
+pub(crate) fn monthly_totals(
     conn: &Connection,
     tenant_id: &str,
     start: &str,
@@ -135,7 +135,7 @@ fn monthly_totals(
     Ok(result)
 }
 
-fn category_slices(
+pub(crate) fn category_slices(
     conn: &Connection,
     tenant_id: &str,
     start: &str,

@@ -738,6 +738,92 @@ export interface AnalyticsReport {
 }
 
 // ---------------------------------------------------------------------------
+// Income
+// ---------------------------------------------------------------------------
+
+export interface IncomeSummary {
+  incomeMinor: number;
+  income: string;
+  previousIncomeMinor: number;
+  previousIncome: string;
+  changePercent: number | null;
+  averageMonthlyMinor: number;
+  averageMonthly: string;
+  expenseMinor: number;
+  expense: string;
+  netMinor: number;
+  net: string;
+  savingsRate: number | null;
+  transactionCount: number;
+  monthCount: number;
+  unassignedMinor: number;
+  unassigned: string;
+  unassignedCount: number;
+}
+
+export interface IncomeSourceReport {
+  id: string;
+  name: string;
+  sourceType: string;
+  currency: string;
+  schedule: string;
+  payDay: number | null;
+  accountId: string | null;
+  accountName: string | null;
+  categoryId: string | null;
+  categoryName: string | null;
+  isActive: boolean;
+  notes: string | null;
+  expectedAmountMinor: number;
+  expectedAmount: string;
+  expectedMinor: number | null;
+  expected: string | null;
+  receivedMinor: number;
+  received: string;
+  varianceMinor: number | null;
+  variance: string | null;
+  occurrences: number | null;
+  transactionCount: number;
+  lastReceivedDate: string | null;
+  estimateNote: string | null;
+}
+
+export interface IncomeAccountRow {
+  accountId: string;
+  name: string;
+  currency: string;
+  incomeMinor: number;
+  income: string;
+  transactionCount: number;
+  percent: number;
+}
+
+export interface IncomeReport {
+  from: string;
+  to: string;
+  currency: string;
+  currencySymbol: string;
+  summary: IncomeSummary;
+  months: MonthPoint[];
+  sources: IncomeSourceReport[];
+  accounts: IncomeAccountRow[];
+  incomeCategories: CategorySlice[];
+}
+
+export interface IncomeSourceInput {
+  name: string;
+  sourceType: string;
+  currencyCode: string;
+  expectedAmount?: string | null;
+  schedule: string;
+  payDay?: number | null;
+  accountId?: string | null;
+  categoryId?: string | null;
+  isActive?: boolean | null;
+  notes?: string | null;
+}
+
+// ---------------------------------------------------------------------------
 // Calendar
 // ---------------------------------------------------------------------------
 
@@ -1115,6 +1201,8 @@ export const api = {
   listCategories: (includeArchived = false) =>
     invoke<Category[]>("list_categories_cmd", { includeArchived }),
   listIncomeSources: () => invoke<IncomeSource[]>("list_income_sources"),
+  saveIncomeSource: (id: string | null, input: IncomeSourceInput) =>
+    invoke<string>("save_income_source", { id, input }),
   updateSetting: (key: string, value: unknown) =>
     invoke<unknown>("update_setting", { input: { key, value } }),
   settingsMap: () => invoke<Record<string, unknown>>("settings_map"),
@@ -1175,6 +1263,8 @@ export const api = {
     invoke<void>("delete_net_worth_snapshot", { id }),
   analyticsReport: (from?: string | null, to?: string | null) =>
     invoke<AnalyticsReport>("analytics_report", { from: from ?? null, to: to ?? null }),
+  incomeReport: (from?: string | null, to?: string | null) =>
+    invoke<IncomeReport>("income_report", { from: from ?? null, to: to ?? null }),
   monthCalendar: (month?: string | null) =>
     invoke<CalendarMonth>("month_calendar", { month: month ?? null }),
   listJournalEntries: (search?: string | null, limit = 200) =>

@@ -7,6 +7,17 @@ bank connections.
 
 The visual language is dark, restrained and desktop-first, built around a red spider lily motif.
 
+## Screenshots
+
+Every screenshot comes from a disposable demo vault, never a real ledger. The full set of 18 pages
+lives in [`docs/screenshots`](docs/screenshots).
+
+| | |
+| --- | --- |
+| **Dashboard** ![Dashboard](docs/screenshots/dashboard.png) | **Income** ![Income](docs/screenshots/income.png) |
+| **Transactions** ![Transactions](docs/screenshots/transactions.png) | **Budgets** ![Budgets](docs/screenshots/budgets.png) |
+| **Analytics** ![Analytics](docs/screenshots/analytics.png) | **Backups & exports** ![Backups](docs/screenshots/backups.png) |
+
 ## What is real in this build
 
 | Area | Status |
@@ -14,6 +25,7 @@ The visual language is dark, restrained and desktop-first, built around a red sp
 | Double-entry ledger | Working. Debits and credits balance in minor units; posted records are immutable and reversible. |
 | Dashboard | Working. Cash, receivables, invested value, liabilities, net worth and recent activity. |
 | Transactions | Working. Expense, income, transfer, refund, fee, investment buy/sell, dividend, adjustment, opening; splits; pending/posted/reconciled status; duplicate check; reversal; delete of drafts only. |
+| Income | Working. Expected-versus-received reporting per source and period, income by account and category, monthly income against spending. Estimates appear only where the saved schedule and currency make them honest. |
 | Accounts | Working. Bank, cash, card, savings, wallet, investment, loan and other accounts with per-account currency. |
 | Budgets | Working. 28→27 cycle by default, allocations, spend read from the ledger in the primary currency. |
 | Savings goals | Working. Contributions are recorded separately and do not post to the ledger. |
@@ -34,8 +46,6 @@ The visual language is dark, restrained and desktop-first, built around a red sp
 
 These are shown honestly in the app instead of being faked:
 
-- **Income module** — the route renders an explicit planned page. Income sources exist in the schema and
-  income transactions are fully supported; the dedicated expected-versus-received reporting screen is not built.
 - **Automatic bank connections** — QIB does not publish a public or sandbox customer API, and QCB open
   banking requires a licensed third-party provider and explicit consent. Rawjan never asks for a bank
   password and never scrapes a website.
@@ -147,9 +157,9 @@ Supported formats: CSV, XLSX (first worksheet), OFX and QIF.
 
 ## Testing
 
-Backend: 80 Rust tests covering money parsing, ledger balance, reversals, budgets, goals, investments,
-liabilities, net worth, analytics, calendar, journal, health, FI, lab, imports, encrypted exports and
-legacy export compatibility.
+Backend: 90 Rust tests covering money parsing, ledger balance, reversals, budgets, goals, investments,
+liabilities, net worth, analytics, income reporting, calendar, journal, health, FI, lab, imports,
+encrypted exports and legacy export compatibility.
 
 ```bat
 scripts\cargo-env.bat test
@@ -187,6 +197,7 @@ src-tauri/src/api/   Thin Tauri commands
 src-tauri/src/services/  Ledger, reports, imports, backups and domain logic
 src-tauri/migrations/    Forward-only schema
 brand/               Brand SVG assets
+docs/screenshots/    Screenshots captured from a disposable demo vault
 scripts/             Cargo/VC++ environment wrappers
 ```
 
