@@ -171,7 +171,10 @@ export function FiPage() {
                 value={form.yearsToRetirement === null ? "" : String(form.yearsToRetirement)}
                 onChange={(event) => {
                   const raw = event.target.value.trim();
-                  update({ yearsToRetirement: raw === "" ? null : Number(raw) });
+                  update({
+                    yearsToRetirement:
+                      raw === "" || !Number.isFinite(Number(raw)) ? null : Number(raw),
+                  });
                 }}
               />
             </Field>

@@ -265,6 +265,24 @@ export function LiabilitiesPage() {
       setFormError("Enter both the original principal and the current outstanding balance.");
       return;
     }
+    if (form.termMonths.trim()) {
+      const term = Number(form.termMonths);
+      if (!Number.isInteger(term) || term < 1 || term > 600) {
+        setFormError("Term months must be a whole number between 1 and 600.");
+        return;
+      }
+    }
+    if (form.dueDay.trim()) {
+      const day = Number(form.dueDay);
+      if (!Number.isInteger(day) || day < 1 || day > 31) {
+        setFormError("Due day must be a whole number between 1 and 31.");
+        return;
+      }
+    }
+    if (form.status === "paid" && !/^0(\.0+)?$/.test(form.outstanding.trim().replace(/,/g, ""))) {
+      setFormError("Set the outstanding balance to zero before marking this liability paid.");
+      return;
+    }
     const input: LiabilityInput = {
       name: form.name.trim(),
       liabilityType: form.liabilityType,
@@ -354,6 +372,12 @@ export function LiabilitiesPage() {
           <Plus className="h-3.5 w-3.5" /> New liability
         </Button>
       </div>
+
+      {summaryQuery.isError ? (
+        <Alert tone="error" title="Could not load the debt summary">
+          {errorMessage(summaryQuery.error)}
+        </Alert>
+      ) : null}
 
       {summary && summary.currencies.length > 0 ? (
         <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
@@ -582,11 +606,14 @@ export function LiabilitiesPage() {
                     size="sm"
                     variant="ghost"
                     className="ml-auto text-zinc-500"
+                    aria-label={`Delete liability ${liability.name}`}
                     disabled={deleteMutation.isPending}
                     onClick={() => {
                       if (
                         window.confirm(
-                          `Delete “${liability.name}”? Its ${liability.payments.length} recorded payment(s) will be removed. Ledger transactions are untouched.`,
+                          liability.payments.length > 0
+                            ? `“${liability.name}” has ${liability.payments.length} recorded payment(s). Deleting is refused while history exists — archive the liability instead so the history is preserved.`
+                            : `Delete “${liability.name}”? This cannot be undone.`,
                         )
                       ) {
                         deleteMutation.mutate(liability.id);

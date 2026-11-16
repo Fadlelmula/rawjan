@@ -764,7 +764,9 @@ pub fn save_payment(
             "Interest and fees cannot exceed the payment amount.".into(),
         ));
     }
-    if principal_minor + interest_minor + fee_minor != amount_minor {
+    if crate::money::checked_sum([principal_minor, interest_minor, fee_minor].into_iter())?
+        != amount_minor
+    {
         return Err(AppError::Validation(
             "Principal, interest and fee must add up to the payment amount.".into(),
         ));
@@ -786,7 +788,9 @@ pub fn save_payment(
         }
         None => 0,
     };
-    if principal_minor > outstanding_minor + previous_principal {
+    if principal_minor
+        > crate::money::checked_sum([outstanding_minor, previous_principal].into_iter())?
+    {
         return Err(AppError::Validation(format!(
             "The principal portion ({}) is larger than the outstanding balance ({}).",
             format_amount(principal_minor, exp),
@@ -794,6 +798,10 @@ pub fn save_payment(
         )));
     }
 
+    // The payment row and the liability balance must move together: a failure
+    // between them would record a payment without adjusting the outstanding.
+    let db_tx = conn.unchecked_transaction()?;
+    let conn: &Connection = &db_tx;
     let now = dates::now_iso();
     let payment_id = match id.filter(|v| !v.is_empty()) {
         Some(existing) => {
@@ -808,8 +816,8 @@ pub fn save_payment(
             let Some((previous_principal, _)) = previous else {
                 return Err(AppError::NotFound("Payment not found.".into()));
             };
-            let delta = principal_minor - previous_principal;
-            let adjusted = outstanding_minor - delta;
+            let delta = crate::money::checked_diff(principal_minor, previous_principal)?;
+            let adjusted = crate::money::checked_diff(outstanding_minor, delta)?;
             if adjusted < 0 {
                 return Err(AppError::Validation(
                     "That change would push the outstanding balance below zero.".into(),
@@ -867,7 +875,7 @@ pub fn save_payment(
                     now
                 ],
             )?;
-            let adjusted = outstanding_minor - principal_minor;
+            let adjusted = crate::money::checked_diff(outstanding_minor, principal_minor)?;
             let next_status = if adjusted == 0 {
                 "paid"
             } else {
@@ -899,6 +907,7 @@ pub fn save_payment(
             "feeMinor": fee_minor
         })),
     )?;
+    db_tx.commit()?;
     Ok(payment_id)
 }
 
@@ -919,6 +928,9 @@ pub fn delete_payment(
         return Err(AppError::NotFound("Payment not found.".into()));
     };
 
+    // The payment row and the restored balance must move together.
+    let db_tx = conn.unchecked_transaction()?;
+    let conn: &Connection = &db_tx;
     conn.execute(
         "DELETE FROM liability_payments WHERE id = ?1 AND tenant_id = ?2",
         params![payment_id, tenant_id],
@@ -929,7 +941,7 @@ pub fn delete_payment(
         params![liability_id, tenant_id],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
-    let restored = outstanding_minor + principal_minor;
+    let restored = crate::money::checked_sum([outstanding_minor, principal_minor].into_iter())?;
     let next_status = if status == "paid" && restored > 0 {
         "active"
     } else {
@@ -957,6 +969,7 @@ pub fn delete_payment(
         None,
         Some(&serde_json::json!({ "liabilityId": liability_id })),
     )?;
+    db_tx.commit()?;
     Ok(())
 }
 
@@ -1006,6 +1019,18 @@ pub fn delete_liability(
     user_id: &str,
     id: &str,
 ) -> AppResult<()> {
+    // Payment history is financial record: never cascade it away. Archive the
+    // liability instead so the repayment trail stays intact.
+    let payments: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM liability_payments WHERE liability_id = ?1 AND tenant_id = ?2",
+        params![id, tenant_id],
+        |r| r.get(0),
+    )?;
+    if payments > 0 {
+        return Err(AppError::Conflict(format!(
+            "This liability has {payments} recorded payment(s). Archive it instead of deleting it so the repayment history is preserved."
+        )));
+    }
     let changed = conn.execute(
         "DELETE FROM liabilities WHERE id = ?1 AND tenant_id = ?2",
         params![id, tenant_id],
@@ -1317,5 +1342,131 @@ mod tests {
         input.status = Some("paid".into());
         let error = save_liability(&conn, &tenant, &user, None, &input).unwrap_err();
         assert!(matches!(error, AppError::Validation(_)));
+    }
+
+    #[test]
+    fn a_failed_payment_write_leaves_no_partial_state() {
+        let (conn, tenant, user) = setup();
+        let liability_id = save_liability(
+            &conn,
+            &tenant,
+            &user,
+            None,
+            &liability_input("loan", "1000.00", "1000.00"),
+        )
+        .unwrap();
+        // Simulated failure on the second statement of the write.
+        conn.execute(
+            "CREATE TRIGGER fail_liability_update BEFORE UPDATE ON liabilities
+             BEGIN SELECT RAISE(ABORT, 'simulated failure'); END",
+            [],
+        )
+        .unwrap();
+
+        let result = save_payment(
+            &conn,
+            &tenant,
+            &user,
+            &liability_id,
+            None,
+            &LiabilityPaymentInput {
+                paid_on: "2026-11-01".into(),
+                amount: "400.00".into(),
+                principal: Some("400.00".into()),
+                interest: None,
+                fee: None,
+                note: None,
+            },
+        );
+        assert!(result.is_err());
+        conn.execute("DROP TRIGGER fail_liability_update", [])
+            .unwrap();
+
+        let (outstanding, payments): (i64, i64) = conn
+            .query_row(
+                "SELECT l.outstanding_minor,
+                        (SELECT COUNT(*) FROM liability_payments p WHERE p.liability_id = l.id)
+                 FROM liabilities l WHERE l.id = ?1",
+                [&liability_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(outstanding, 100_000, "the balance must be untouched");
+        assert_eq!(payments, 0, "no payment row may survive a failed write");
+    }
+
+    #[test]
+    fn payment_components_that_overflow_are_rejected() {
+        let (conn, tenant, user) = setup();
+        let liability_id = save_liability(
+            &conn,
+            &tenant,
+            &user,
+            None,
+            &liability_input("loan", "92233720368547758.07", "92233720368547758.07"),
+        )
+        .unwrap();
+        // principal + interest would wrap around i64 in release builds; the
+        // sum must be computed with checked arithmetic and rejected.
+        let error = save_payment(
+            &conn,
+            &tenant,
+            &user,
+            &liability_id,
+            None,
+            &LiabilityPaymentInput {
+                paid_on: "2026-11-01".into(),
+                amount: "89.00".into(),
+                principal: Some("92233720368547758.07".into()),
+                interest: Some("1.00".into()),
+                fee: None,
+                note: None,
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(error, AppError::Validation(_)));
+    }
+
+    #[test]
+    fn deleting_a_liability_preserves_payment_history() {
+        let (conn, tenant, user) = setup();
+        let liability_id = save_liability(
+            &conn,
+            &tenant,
+            &user,
+            None,
+            &liability_input("loan", "1000.00", "1000.00"),
+        )
+        .unwrap();
+        let payment_id = save_payment(
+            &conn,
+            &tenant,
+            &user,
+            &liability_id,
+            None,
+            &LiabilityPaymentInput {
+                paid_on: "2026-11-01".into(),
+                amount: "400.00".into(),
+                principal: Some("400.00".into()),
+                interest: None,
+                fee: None,
+                note: None,
+            },
+        )
+        .unwrap();
+
+        let error = delete_liability(&conn, &tenant, &user, &liability_id).unwrap_err();
+        assert!(matches!(error, AppError::Conflict(_)));
+        let payments: i64 = conn
+            .query_row("SELECT COUNT(*) FROM liability_payments", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(payments, 1, "payment history must not be cascade-deleted");
+
+        delete_payment(&conn, &tenant, &user, &payment_id).unwrap();
+        delete_liability(&conn, &tenant, &user, &liability_id).unwrap();
+        let liabilities: i64 = conn
+            .query_row("SELECT COUNT(*) FROM liabilities", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(liabilities, 0);
     }
 }

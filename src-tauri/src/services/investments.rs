@@ -4,7 +4,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use rust_decimal::{Decimal, RoundingStrategy};
 use serde::{Deserialize, Serialize};
 
-use crate::dates::{self, iso, today_local};
+use crate::dates;
 use crate::error::{AppError, AppResult};
 use crate::money::{amount_to_minor, format_amount, parse_amount, to_decimal};
 use crate::services::currency::{currency_meta, primary_currency};
@@ -181,7 +181,8 @@ pub struct TradeInput {
 #[serde(rename_all = "camelCase")]
 pub struct ValuationInput {
     pub account_id: String,
-    pub instrument_id: String,
+    /// `None` marks an account-level valuation (no single instrument).
+    pub instrument_id: Option<String>,
     pub as_of_date: String,
     pub value: String,
     pub source_ref: Option<String>,
@@ -1085,7 +1086,26 @@ pub fn save_valuation(
 ) -> AppResult<String> {
     dates::parse_date(&input.as_of_date)?;
     validate_account(conn, tenant_id, &input.account_id)?;
-    let (symbol, _, _, currency) = validate_instrument(conn, tenant_id, &input.instrument_id)?;
+    let instrument_id = input
+        .instrument_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty());
+    let (symbol, currency) = match instrument_id {
+        Some(instrument_id) => {
+            let (symbol, _, _, currency) = validate_instrument(conn, tenant_id, instrument_id)?;
+            (Some(symbol), currency)
+        }
+        None => {
+            // Account-level valuation: the value follows the account currency.
+            let currency: String = conn.query_row(
+                "SELECT currency_code FROM accounts WHERE id = ?1 AND tenant_id = ?2",
+                params![input.account_id, tenant_id],
+                |r| r.get(0),
+            )?;
+            (None, currency)
+        }
+    };
     let exp = currency_meta(conn, &currency)?.exponent;
     let value_minor = parse_amount(&input.value, exp)?;
     if value_minor < 0 {
@@ -1110,7 +1130,7 @@ pub fn save_valuation(
                  WHERE id = ?7 AND tenant_id = ?8",
                 params![
                     input.account_id,
-                    input.instrument_id,
+                    instrument_id,
                     input.as_of_date,
                     value_minor,
                     currency,
@@ -1131,7 +1151,7 @@ pub fn save_valuation(
                     new_id,
                     tenant_id,
                     input.account_id,
-                    input.instrument_id,
+                    instrument_id,
                     input.as_of_date,
                     SCALE as i64,
                     value_minor,
@@ -1185,38 +1205,6 @@ pub fn delete_valuation(
         None,
     )?;
     Ok(())
-}
-
-/// Total portfolio market value in the primary currency, plus any currencies
-/// that could not be converted. Unconvertible amounts are excluded from the
-/// total and reported rather than silently dropped or substituted.
-pub fn latest_portfolio_value(conn: &Connection, tenant_id: &str) -> AppResult<(i64, Vec<String>)> {
-    let base = primary_currency(conn, tenant_id)?;
-    let summary = portfolio_summary(conn, tenant_id)?;
-    let mut total = 0i64;
-    let mut missing = Vec::new();
-    for currency in summary.currencies {
-        if currency.market_value_minor == 0 {
-            continue;
-        }
-        if currency.currency == base {
-            total += currency.market_value_minor;
-        } else {
-            let converted = crate::services::currency::convert_to_currency(
-                conn,
-                tenant_id,
-                currency.market_value_minor,
-                &currency.currency,
-                &base,
-                &iso(today_local()),
-            );
-            match converted {
-                Ok((value, _)) => total += value,
-                Err(_) => missing.push(currency.currency),
-            }
-        }
-    }
-    Ok((total, missing))
 }
 
 #[cfg(test)]
@@ -1364,7 +1352,7 @@ mod tests {
             None,
             &ValuationInput {
                 account_id: account.clone(),
-                instrument_id: first.clone(),
+                instrument_id: Some(first.clone()),
                 as_of_date: "2026-11-14".into(),
                 value: "1200.00".into(),
                 source_ref: None,
@@ -1427,7 +1415,7 @@ mod tests {
             None,
             &ValuationInput {
                 account_id: account.clone(),
-                instrument_id: instrument_id.clone(),
+                instrument_id: Some(instrument_id.clone()),
                 as_of_date: "2026-11-14".into(),
                 value: "1200.00".into(),
                 source_ref: Some("broker statement".into()),
@@ -1482,5 +1470,67 @@ mod tests {
         .unwrap();
         let error = delete_instrument(&conn, &tenant, &user, &instrument_id).unwrap_err();
         assert!(matches!(error, AppError::Validation(_)));
+    }
+
+    #[test]
+    fn duplicate_valuations_for_the_same_holding_and_day_are_rejected() {
+        let (conn, tenant, user, account) = setup();
+        let instrument_id = instrument(&conn, &tenant, &user);
+        let valuation = ValuationInput {
+            account_id: account.clone(),
+            instrument_id: Some(instrument_id.clone()),
+            as_of_date: "2026-11-14".into(),
+            value: "1200.00".into(),
+            source_ref: None,
+        };
+        save_valuation(&conn, &tenant, &user, None, &valuation).unwrap();
+        // A second valuation for the same holding and day must be refused:
+        // duplicates used to be silently masked by `LIMIT 1` queries.
+        let error = save_valuation(&conn, &tenant, &user, None, &valuation).unwrap_err();
+        assert!(matches!(error, AppError::Db(_)));
+    }
+
+    #[test]
+    fn account_level_valuations_keep_their_scope_when_edited() {
+        let (conn, tenant, user, account) = setup();
+        let valuation_id = save_valuation(
+            &conn,
+            &tenant,
+            &user,
+            None,
+            &ValuationInput {
+                account_id: account.clone(),
+                instrument_id: None,
+                as_of_date: "2026-11-14".into(),
+                value: "5000.00".into(),
+                source_ref: None,
+            },
+        )
+        .unwrap();
+
+        let listed = list_valuations(&conn, &tenant, None).unwrap();
+        assert_eq!(
+            listed[0].instrument_id, None,
+            "scope must stay account-level"
+        );
+
+        // Editing must not silently re-point the valuation at an instrument.
+        save_valuation(
+            &conn,
+            &tenant,
+            &user,
+            Some(&valuation_id),
+            &ValuationInput {
+                account_id: account.clone(),
+                instrument_id: None,
+                as_of_date: "2026-11-14".into(),
+                value: "5200.00".into(),
+                source_ref: None,
+            },
+        )
+        .unwrap();
+        let listed = list_valuations(&conn, &tenant, None).unwrap();
+        assert_eq!(listed[0].instrument_id, None);
+        assert_eq!(listed[0].value_minor, 520_000);
     }
 }

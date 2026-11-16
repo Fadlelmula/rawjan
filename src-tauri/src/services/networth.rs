@@ -4,7 +4,7 @@ use serde::Serialize;
 use crate::error::{AppError, AppResult};
 use crate::money::format_amount;
 use crate::services::accounts::{net_worth, save_net_worth_snapshot, NetWorth};
-use crate::services::currency::{currency_meta, exponent, primary_currency};
+use crate::services::currency::{currency_meta, exponent};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -193,10 +193,6 @@ pub fn delete_snapshot(
         None,
     )?;
     Ok(())
-}
-
-pub fn latest_base_currency(conn: &Connection, tenant_id: &str) -> AppResult<String> {
-    primary_currency(conn, tenant_id)
 }
 
 #[cfg(test)]

@@ -118,6 +118,9 @@ scripts\dev.bat
   Amounts and rates are parsed with a strict grammar (invalid characters are rejected, never
   stripped) and conversions use checked arithmetic that reports overflow instead of saturating. The
   frontend never performs monetary arithmetic; it receives display-ready strings from Rust.
+- **Write safety:** financial mutations (transaction create/edit/reverse, liability payments,
+  account creation with opening balances, import commits) run inside database transactions, so a
+  failed write never leaves half a record behind.
 - **Original values:** transactions keep their original currency and amount, plus the historical FX
   snapshot and base-currency amount used for reports.
 - **Audit trail:** mutations write local audit events. Posted ledger entries are reversed, not edited.
@@ -183,10 +186,10 @@ Supported formats: CSV, XLSX (first worksheet), OFX and QIF.
 
 ## Testing
 
-Backend: 119 Rust tests covering strict money parsing and overflow, ledger balance, reversals,
-budgets (including FX-unavailable budgets), goals, investments, liabilities, net worth, analytics
-counting and category percentages, income reporting, calendar, journal, health, FI, lab, imports,
-encrypted exports and legacy export compatibility.
+Backend: 126 Rust tests covering strict money parsing and overflow, ledger balance, reversals and
+atomic edits, budgets (including FX-unavailable budgets), goals, investments, liabilities, net
+worth, analytics counting and category percentages, income reporting, calendar, journal, health,
+FI, lab, imports, encrypted exports, schema migrations and legacy export compatibility.
 
 ```bat
 scripts\cargo-env.bat test

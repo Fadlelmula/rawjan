@@ -32,13 +32,13 @@ pub fn list_entries(
     let limit = limit.unwrap_or(200).clamp(1, 1000);
     let pattern = search
         .filter(|value| !value.trim().is_empty())
-        .map(|value| format!("%{}%", value.trim().to_lowercase()));
+        .map(crate::db::like_contains);
 
     let mut stmt = conn.prepare(
         "SELECT id, title, body, entry_date, created_at, updated_at
          FROM journal_entries
          WHERE tenant_id = ?1
-           AND (?2 IS NULL OR lower(title) LIKE ?2 OR lower(body) LIKE ?2)
+           AND (?2 IS NULL OR lower(title) LIKE ?2 ESCAPE '!' OR lower(body) LIKE ?2 ESCAPE '!')
          ORDER BY entry_date DESC, created_at DESC
          LIMIT ?3",
     )?;
@@ -111,11 +111,17 @@ pub fn save_entry(
                 "journal_entry",
                 existing,
                 "update",
-                Some(&serde_json::to_value(&before)?),
+                // Journal prose stays in the journal table; the audit trail
+                // records only metadata so private text is not duplicated.
+                Some(&serde_json::json!({
+                    "title": before.title,
+                    "entryDate": before.entry_date,
+                    "bodyLength": before.body.len()
+                })),
                 Some(&serde_json::json!({
                     "title": title,
-                    "body": body,
-                    "entryDate": entry_date
+                    "entryDate": entry_date,
+                    "bodyLength": body.len()
                 })),
             )?;
             Ok(existing.to_string())
@@ -137,8 +143,8 @@ pub fn save_entry(
                 None,
                 Some(&serde_json::json!({
                     "title": title,
-                    "body": body,
-                    "entryDate": entry_date
+                    "entryDate": entry_date,
+                    "bodyLength": body.len()
                 })),
             )?;
             Ok(new_id)

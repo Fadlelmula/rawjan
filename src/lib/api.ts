@@ -60,6 +60,7 @@ export interface Account {
   openingDate: string | null;
   createdAt: string;
   marketValueMinor: number | null;
+  creditUsedPercent: number | null;
 }
 
 export interface Category {
@@ -92,6 +93,12 @@ export interface NetWorth {
   receivables: string;
   otherAssetsMinor: number;
   otherAssets: string;
+  assetSharePercent: number | null;
+  liabilitySharePercent: number | null;
+  cashPercent: number;
+  investedPercent: number;
+  receivablesPercent: number;
+  otherAssetsPercent: number;
   missingRates: string[];
   accountsIncluded: number;
 }
@@ -573,7 +580,8 @@ export interface TradeInput {
 
 export interface ValuationInput {
   accountId: string;
-  instrumentId: string;
+  /** null marks an account-level valuation (no single instrument). */
+  instrumentId: string | null;
   asOfDate: string;
   value: string;
   sourceRef?: string | null;

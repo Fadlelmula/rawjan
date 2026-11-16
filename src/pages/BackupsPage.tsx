@@ -16,7 +16,7 @@ import {
 import { api, errorMessage } from "@/lib/api";
 import type { Backup, BackupValidation, ExportResult, ExportSummary } from "@/lib/api";
 import { useBootstrap } from "@/lib/bootstrap";
-import { formatDate, titleCase } from "@/lib/display";
+import { formatDateTime, titleCase } from "@/lib/display";
 import { useToast } from "@/components/Toast";
 import {
   Alert,
@@ -227,6 +227,10 @@ export function BackupsPage() {
           <div className="flex items-center justify-center py-8 text-zinc-500">
             <Spinner className="h-4 w-4" />
           </div>
+        ) : backupsQuery.isError ? (
+          <Alert tone="error" title="Could not load backups">
+            {errorMessage(backupsQuery.error)}
+          </Alert>
         ) : backupFiles.length === 0 ? (
           <EmptyState
             icon={<Database className="h-5 w-5" />}
@@ -257,7 +261,7 @@ export function BackupsPage() {
                   <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[0.6rem] text-zinc-600">
                     <span>{formatBytes(backup.byteSize)}</span>
                     <span>Schema v{backup.schemaVersion}</span>
-                    <span>{formatDate(backup.createdAt.slice(0, 10))}</span>
+                    <span>{formatDateTime(backup.createdAt)}</span>
                     <span className="font-mono">sha256 {backup.sha256.slice(0, 16)}…</span>
                   </div>
                 </div>
@@ -274,6 +278,7 @@ export function BackupsPage() {
                     size="sm"
                     variant="danger"
                     loading={deleteMutation.isPending}
+                    aria-label={`Delete backup ${backup.fileName}`}
                     onClick={() => {
                       if (
                         window.confirm(
@@ -423,11 +428,16 @@ export function BackupsPage() {
             </Button>
           </div>
           {verifySummary ? (
-            <Alert tone={verifySummary.valid ? "success" : "error"} title="Export verified">
+            <Alert
+              tone={verifySummary.valid ? "success" : "error"}
+              title={verifySummary.valid ? "Export verified" : "Export verification failed"}
+            >
               <div className="space-y-1">
                 <div>{verifySummary.message}</div>
                 <div className="text-[0.62rem] text-zinc-500">
-                  {verifySummary.exportedAt ? `Exported ${verifySummary.exportedAt}` : ""}
+                  {verifySummary.exportedAt
+                    ? `Exported ${formatDateTime(verifySummary.exportedAt)}`
+                    : ""}
                   {verifySummary.schemaVersion !== null
                     ? ` · schema v${verifySummary.schemaVersion}`
                     : ""}
@@ -447,7 +457,7 @@ export function BackupsPage() {
               >
                 <span className="truncate font-mono text-zinc-300">{backup.fileName}</span>
                 <span>{formatBytes(backup.byteSize)}</span>
-                <span>{formatDate(backup.createdAt.slice(0, 10))}</span>
+                <span>{formatDateTime(backup.createdAt)}</span>
                 <span className="ml-auto font-mono text-zinc-600">
                   {backup.sha256.slice(0, 12)}…
                 </span>

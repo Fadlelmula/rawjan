@@ -5,7 +5,7 @@ import { NotebookPen, Pencil, Plus, Search, Trash2 } from "lucide-react";
 import { api, errorMessage } from "@/lib/api";
 import type { JournalEntry, JournalInput } from "@/lib/api";
 import { useBootstrap } from "@/lib/bootstrap";
-import { formatDate, todayInputValue } from "@/lib/display";
+import { formatDate, formatDateTime, todayInputValue } from "@/lib/display";
 import { useToast } from "@/components/Toast";
 import {
   Alert,
@@ -132,6 +132,7 @@ export function JournalPage() {
           <input
             className="rawjan-input h-9 pl-8 text-xs"
             placeholder="Search titles and notes"
+            aria-label="Search journal entries"
             value={searchInput}
             onChange={(event) => setSearchInput(event.target.value)}
             onKeyDown={(event) => {
@@ -202,7 +203,7 @@ export function JournalPage() {
                       <Badge tone="muted">{formatDate(entry.entryDate)}</Badge>
                     </div>
                     <div className="mt-1 text-[0.58rem] uppercase tracking-[0.14em] text-zinc-600">
-                      Updated {formatDate(entry.updatedAt.slice(0, 10))}
+                      Updated {formatDateTime(entry.updatedAt)}
                     </div>
                   </div>
                   <div className="flex shrink-0 items-center gap-1">

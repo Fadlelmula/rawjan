@@ -216,6 +216,21 @@ pub fn create_transaction(
     user_id: &str,
     input: &TxInput,
 ) -> AppResult<PostResult> {
+    let db_tx = conn.unchecked_transaction()?;
+    let result = create_transaction_inner(&db_tx, tenant_id, user_id, None, None, input)?;
+    db_tx.commit()?;
+    Ok(result)
+}
+
+/// Write a transaction on a caller-owned connection/transaction. Used when a
+/// larger operation (an edit, an import batch, an account opening) must commit
+/// several writes atomically. The caller owns the transaction boundary.
+pub(crate) fn create_transaction_on(
+    conn: &Connection,
+    tenant_id: &str,
+    user_id: &str,
+    input: &TxInput,
+) -> AppResult<PostResult> {
     create_transaction_inner(conn, tenant_id, user_id, None, None, input)
 }
 
@@ -412,7 +427,7 @@ fn create_transaction_inner(
                         "Split categories must be expense categories.".into(),
                     ));
                 }
-                total += split_minor;
+                total = crate::money::checked_sum([total, split_minor].into_iter())?;
                 category_legs.push((
                     split.category_id.clone(),
                     split_minor,
@@ -482,14 +497,14 @@ fn create_transaction_inner(
     let mut allocated = 0i64;
     for (index, (_, leg_amount, _, _)) in category_legs.iter().enumerate() {
         if index + 1 == category_legs.len() {
-            category_bases.push(base_amount - allocated);
+            category_bases.push(crate::money::checked_diff(base_amount, allocated)?);
         } else {
             let converted = if tx_currency == base_currency {
                 *leg_amount
             } else {
                 convert_minor(*leg_amount, tx_exp, base_exp, rate_value)?
             };
-            allocated += converted;
+            allocated = crate::money::checked_sum([allocated, converted].into_iter())?;
             category_bases.push(converted);
         }
     }
@@ -681,16 +696,16 @@ fn create_transaction_inner(
         _ => unreachable!(),
     }
 
-    let debit_total: i64 = legs
-        .iter()
-        .filter(|l| l.entry_type == "debit")
-        .map(|l| l.base_minor)
-        .sum();
-    let credit_total: i64 = legs
-        .iter()
-        .filter(|l| l.entry_type == "credit")
-        .map(|l| l.base_minor)
-        .sum();
+    let debit_total = crate::money::checked_sum(
+        legs.iter()
+            .filter(|l| l.entry_type == "debit")
+            .map(|l| l.base_minor),
+    )?;
+    let credit_total = crate::money::checked_sum(
+        legs.iter()
+            .filter(|l| l.entry_type == "credit")
+            .map(|l| l.base_minor),
+    )?;
     if debit_total != credit_total {
         return Err(AppError::Internal(format!(
             "Ledger imbalance detected (debits {debit_total}, credits {credit_total}). The transaction was not saved."
@@ -735,7 +750,9 @@ fn create_transaction_inner(
     };
     let is_split_int = if is_split { 1i64 } else { 0i64 };
 
-    let db_tx = conn.unchecked_transaction()?;
+    // The caller owns the transaction boundary (see `create_transaction` and
+    // `create_transaction_on`); everything below participates in it.
+    let db_tx = conn;
     db_tx.execute(
         "INSERT INTO transactions
          (id, tenant_id, user_id, kind, status, data_status, description, payee, notes, local_date, occurred_at,
@@ -777,7 +794,7 @@ fn create_transaction_inner(
     )?;
 
     for leg in &legs {
-        insert_leg(&db_tx, tenant_id, &transaction_id, &base_currency, leg)?;
+        insert_leg(db_tx, tenant_id, &transaction_id, &base_currency, leg)?;
     }
 
     if is_split {
@@ -802,7 +819,7 @@ fn create_transaction_inner(
     }
 
     if let Some(tags) = input.tags.as_ref().filter(|t| !t.is_empty()) {
-        let tag_ids = resolve_tags(&db_tx, tenant_id, tags)?;
+        let tag_ids = resolve_tags(db_tx, tenant_id, tags)?;
         for tag_id in tag_ids {
             db_tx.execute(
                 "INSERT OR IGNORE INTO transaction_tags (transaction_id, tag_id, tenant_id) VALUES (?1, ?2, ?3)",
@@ -810,8 +827,6 @@ fn create_transaction_inner(
             )?;
         }
     }
-
-    db_tx.commit()?;
 
     db::audit(
         conn,
@@ -903,9 +918,11 @@ pub fn list_transactions(
     if let Some(q) = filter.search.filter(|v| !v.trim().is_empty()) {
         let placeholder = args.len() + 1;
         where_sql.push_str(&format!(
-            " AND (lower(t.description) LIKE ?{placeholder} OR lower(COALESCE(t.payee,'')) LIKE ?{placeholder} OR lower(COALESCE(t.notes,'')) LIKE ?{placeholder})"
+            " AND (lower(t.description) LIKE ?{placeholder} ESCAPE '!'
+                  OR lower(COALESCE(t.payee,'')) LIKE ?{placeholder} ESCAPE '!'
+                  OR lower(COALESCE(t.notes,'')) LIKE ?{placeholder} ESCAPE '!')"
         ));
-        args.push(Box::new(format!("%{}%", q.trim().to_lowercase())));
+        args.push(Box::new(crate::db::like_contains(q)));
     }
     if let Some(v) = filter.account_id.filter(|v| !v.is_empty()) {
         let p = args.len() + 1;
@@ -1452,7 +1469,11 @@ pub fn update_transaction(
                 ));
             }
         }
-        conn.execute(
+        // Metadata and category edits must land together: a partial failure
+        // would leave `transactions.category_id` and `ledger_entries.category_id`
+        // disagreeing.
+        let db_tx = conn.unchecked_transaction()?;
+        db_tx.execute(
             "UPDATE transactions SET description = ?1, payee = ?2, notes = ?3, updated_at = ?4 WHERE id = ?5",
             params![
                 input.description.trim(),
@@ -1463,30 +1484,30 @@ pub fn update_transaction(
             ],
         )?;
         if let Some(new_category) = input.category_id.as_deref().filter(|v| !v.is_empty()) {
-            let is_split: i64 = conn.query_row(
+            let is_split: i64 = db_tx.query_row(
                 "SELECT is_split FROM transactions WHERE id = ?1",
                 [id],
                 |r| r.get(0),
             )?;
             if is_split == 0 && Some(new_category.to_string()) != old_category {
                 let kind: String =
-                    conn.query_row("SELECT kind FROM transactions WHERE id = ?1", [id], |r| {
+                    db_tx.query_row("SELECT kind FROM transactions WHERE id = ?1", [id], |r| {
                         r.get(0)
                     })?;
                 if matches!(
                     kind.as_str(),
                     "expense" | "income" | "refund" | "fee" | "dividend"
                 ) {
-                    category_kind(conn, tenant_id, new_category)?;
-                    conn.execute(
+                    category_kind(&db_tx, tenant_id, new_category)?;
+                    db_tx.execute(
                         "UPDATE ledger_entries SET category_id = ?1 WHERE transaction_id = ?2 AND category_id IS NOT NULL",
                         params![new_category, id],
                     )?;
-                    conn.execute(
+                    db_tx.execute(
                         "UPDATE transactions SET category_id = ?1 WHERE id = ?2",
                         params![new_category, id],
                     )?;
-                    conn.execute(
+                    db_tx.execute(
                         "INSERT INTO categorization_history (id, tenant_id, transaction_id, previous_category_id, new_category_id, actor, created_at)
                          VALUES (?1, ?2, ?3, ?4, ?5, 'user', ?6)",
                         params![uuid::Uuid::new_v4().to_string(), tenant_id, id, old_category, new_category, now_iso()],
@@ -1495,7 +1516,7 @@ pub fn update_transaction(
             }
         }
         db::audit(
-            conn,
+            &db_tx,
             tenant_id,
             user_id,
             "transaction",
@@ -1504,6 +1525,7 @@ pub fn update_transaction(
             None,
             None,
         )?;
+        db_tx.commit()?;
         return Ok(());
     }
 
@@ -1513,7 +1535,11 @@ pub fn update_transaction(
         ));
     }
 
-    // Drafts and pending records can be fully re-entered. Delete only their own rows.
+    // Drafts and pending records can be fully re-entered. Delete only their own
+    // rows, and re-create inside the same transaction: if re-creation fails
+    // validation, the original record must survive untouched.
+    let mut new_input = input.clone();
+    new_input.status = Some(status);
     let db_tx = conn.unchecked_transaction()?;
     db_tx.execute(
         "DELETE FROM transaction_splits WHERE transaction_id = ?1",
@@ -1528,18 +1554,15 @@ pub fn update_transaction(
         "DELETE FROM transactions WHERE id = ?1 AND tenant_id = ?2",
         params![id, tenant_id],
     )?;
-    db_tx.commit()?;
-
-    let mut new_input = input.clone();
-    new_input.status = Some(status);
     create_transaction_inner(
-        conn,
+        &db_tx,
         tenant_id,
         user_id,
         Some(id),
         Some(&created_at),
         &new_input,
     )?;
+    db_tx.commit()?;
     Ok(())
 }
 
@@ -1664,6 +1687,52 @@ mod tests {
             .unwrap();
         assert_eq!(debits, credits);
         assert_eq!(debits, 25000);
+    }
+
+    #[test]
+    fn editing_a_draft_that_fails_validation_keeps_the_original() {
+        let (conn, tenant, user, account, category) = setup();
+        let mut draft = input(&account, &category, "250.00");
+        draft.status = Some("draft".into());
+        let created = create_transaction(&conn, &tenant, &user, &draft).unwrap();
+
+        // Re-entering the draft against a nonexistent account must fail
+        // validation without destroying the original record.
+        let mut bad = input("no-such-account", &category, "250.00");
+        bad.status = Some("draft".into());
+        assert!(update_transaction(&conn, &tenant, &user, &created.id, &bad).is_err());
+
+        let rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM transactions WHERE id = ?1",
+                [&created.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 1, "the original draft must survive a failed edit");
+        let legs: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM ledger_entries WHERE transaction_id = ?1",
+                [&created.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(legs > 0, "the original ledger entries must survive too");
+
+        // A valid edit still works and keeps the id and creation time.
+        let mut good = input(&account, &category, "300.00");
+        good.status = Some("draft".into());
+        good.description = "Updated".into();
+        update_transaction(&conn, &tenant, &user, &created.id, &good).unwrap();
+        let (description, amount): (String, i64) = conn
+            .query_row(
+                "SELECT description, original_amount_minor FROM transactions WHERE id = ?1",
+                [&created.id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(description, "Updated");
+        assert_eq!(amount, 30_000);
     }
 
     #[test]

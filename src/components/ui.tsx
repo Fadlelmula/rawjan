@@ -1,5 +1,5 @@
 import type { ButtonHTMLAttributes, ReactNode } from "react";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import clsx from "clsx";
 import { X } from "lucide-react";
 
@@ -164,10 +164,32 @@ export function Modal({
   footer?: ReactNode;
   width?: "sm" | "md" | "lg" | "xl";
 }) {
+  const dialogRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
+    const opener = document.activeElement as HTMLElement | null;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
+      // Keep Tab focus inside the dialog.
+      if (event.key === "Tab" && dialogRef.current) {
+        const focusable = Array.from(
+          dialogRef.current.querySelectorAll<HTMLElement>(
+            'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+          ),
+        );
+        if (focusable.length === 0) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        const active = document.activeElement;
+        const inside = dialogRef.current.contains(active);
+        if (event.shiftKey && (!inside || active === first)) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && (!inside || active === last)) {
+          event.preventDefault();
+          first.focus();
+        }
+      }
     };
     document.addEventListener("keydown", onKeyDown);
     const previous = document.body.style.overflow;
@@ -175,6 +197,7 @@ export function Modal({
     return () => {
       document.removeEventListener("keydown", onKeyDown);
       document.body.style.overflow = previous;
+      opener?.focus?.();
     };
   }, [open, onClose]);
 
@@ -190,6 +213,7 @@ export function Modal({
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/70 p-4 backdrop-blur-sm sm:p-8">
       <div
+        ref={dialogRef}
         className={clsx(
           "rawjan-panel rawjan-enter my-auto w-full overflow-hidden",
           widths[width],

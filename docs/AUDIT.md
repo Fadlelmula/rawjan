@@ -46,9 +46,39 @@ tests exist.
 - Import amounts parse only the digit span: currency decoration is allowed, embedded garbage is
   rejected and surfaces as a row issue.
 
-Verification: 119 Rust tests, 10 Vitest tests, strict `tsc --noEmit`, production build,
-`cargo fmt --check`, `cargo clippy --all-targets` (clean of errors; remaining warnings are
-pre-existing dead code and style lints).
+## Fixed in the hardening round (write atomicity, integrity, display honesty)
+
+| Issue | Fix |
+| --- | --- |
+| Draft/pending edits deleted then re-created non-atomically (data loss on failure) | `update_transaction` runs delete + re-create in one transaction (`tx.rs`) |
+| Liability payment save/delete split-brain risk | `save_payment`/`delete_payment` wrap payment rows and balance updates in one transaction; failure leaves no partial state (regression test with an injected trigger failure) |
+| Posted-path category edits could desynchronize `transactions`/`ledger_entries` | the metadata + category edit now commits as one transaction |
+| Account creation with an opening balance could leave an account without its ledger entry | account insert + opening transaction + audit commit together |
+| Import commit could leave rows imported while the job read "parsed" | the whole commit runs in one transaction with per-row savepoints |
+| Release-build `i64` wrap could bypass split/payment "must add up" checks | `checked_sum`/`checked_diff` applied to splits, leg allocation, payment components and net-worth totals |
+| Deleting a goal/liability cascade-erased contributions/payments | deletion is refused while recorded history exists (archive instead); UI confirm text matches |
+| Silent key rotation when the Credential Manager entry is malformed | malformed keys now error with recovery guidance; a key is generated only when none exists |
+| Settings accepted arbitrary keys; full values (and journal bodies) were duplicated into the audit trail | settings are a closed allow-list; `app_lock` values never audited; journal audits store metadata only |
+| Arbitrary-path file reads | imports only read statement extensions; backup validation only opens `.db`-shaped files; export verification checks extension and caps the read at 256 MB |
+| Duplicate daily valuations were silently masked | unique index on (account, instrument, day); older duplicates are removed in the migration |
+| Account-level valuations were silently re-pointed to the first instrument when edited | `ValuationInput.instrument_id` is now optional end-to-end; the UI offers "Account-level" |
+| Missing FK/tenant indexes | migration `0002_integrity_indexes.sql` adds 22 indexes |
+| LIKE-wildcard injection in search | wildcards are escaped (`db::like_contains`, `ESCAPE '!'`) |
+| Dashboard count hints claimed "Active"/"In progress" for unfiltered counts | hints now describe what is counted |
+| Analytics bar widths disagreed with the printed percentages | bars follow the Rust-computed percent of the full total |
+| Money percentages computed in JavaScript (Dashboard, Net worth, Accounts) | percentages moved into Rust (`NetWorth` shares, `AccountDto.credit_used_percent`); JS keeps only chart geometry |
+| Query failures rendered fake empty states (Investments, Imports, Backups, Liabilities) and endless spinners (5 pages) | error branches added; spinner conditions no longer mask errors |
+| Import commit had no confirmation | confirmation summarizing rows and scope |
+| "Export verified" title shown even on failure | title reflects the actual result |
+| Accessibility gaps | aria-labels on icon buttons and search inputs, `th scope` on all tables, modal focus trap + focus restore, toast `aria-live` region |
+| Timestamps rendered as UTC slices that could show the wrong day | shared `formatDateTime` renders local time consistently |
+| Inert controls (scheduled backups, budget rollover) looked functional | disabled with explicit "not implemented" hints |
+| Client-side numeric coercion (NaN days, silent `|| 28`) | validation added on Accounts, Budgets, Liabilities, Settings, FI inputs |
+| Unused dependencies and dead code | `base64`, `regex`, `serial_test` removed; three dead `pub` functions removed |
+
+Verification after the round: 126 Rust tests (including a v1→v2 migration test with real rows),
+10 Vitest tests, strict `tsc --noEmit`, production build, `cargo fmt --check`, `cargo clippy
+--all-targets` without errors.
 
 ## Known risks and debt
 
@@ -75,11 +105,13 @@ pre-existing dead code and style lints).
 
 ### Engineering quality
 - No CI pipeline yet (rustfmt, clippy, tests, typecheck, frontend tests, build).
-- `cargo fmt` is now clean tree-wide; `cargo clippy --all-targets` still reports pre-existing
-  dead-code warnings (`period_range`, `account_balance_in_base`, `format_scaled`, unused struct
-  fields) and a few style lints (complex types, too many arguments).
-- `base64` is declared but unused; the linker emits OpenSSL PDB warnings on MSVC builds (cosmetic).
-- Modal focus management and keyboard traversal are basic; accessibility has not been audited.
+- `cargo fmt` is clean tree-wide; `cargo clippy --all-targets` still reports pre-existing
+  dead-code warnings (`period_range`, `format_scaled`, unused struct fields) and a few style lints
+  (complex types, too many arguments).
+- `base64` is no longer a dependency (removed); the linker still emits OpenSSL PDB warnings on MSVC
+  builds (cosmetic).
+- Modal focus management now includes a focus trap and focus restoration; a full accessibility audit
+  (screen-reader testing, contrast measurement) has not been performed.
 
 ## Prioritised plan
 

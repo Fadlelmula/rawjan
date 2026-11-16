@@ -354,6 +354,18 @@ pub fn validate_backup(path: &str) -> AppResult<BackupValidation> {
             "That backup file does not exist.".into(),
         ));
     }
+    // Backups are SQLite database files; anything else is refused rather than
+    // handed to the database engine.
+    let extension = path_ref
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())
+        .unwrap_or_default();
+    if !matches!(extension.as_str(), "db" | "sqlite" | "sqlite3") {
+        return Err(AppError::Validation(format!(
+            "That does not look like a Rawjan backup (expected a .db file), got '.{extension}'."
+        )));
+    }
     let (key, encrypted) = db::resolve_database_key()?;
     let file_name = path_ref
         .file_name()
@@ -615,6 +627,24 @@ pub fn verify_export(path: &str, passphrase: &str) -> AppResult<ExportSummary> {
     if !path_ref.is_file() {
         return Err(AppError::Validation(
             "That export file does not exist.".into(),
+        ));
+    }
+    let extension = path_ref
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())
+        .unwrap_or_default();
+    if !matches!(extension.as_str(), "rawjan" | "aureqis") {
+        return Err(AppError::Validation(format!(
+            "That does not look like a Rawjan export (expected a .rawjan file), got '.{extension}'."
+        )));
+    }
+    // Bounded read: verification never allocates an arbitrarily large file.
+    const MAX_VERIFY_BYTES: u64 = 256 * 1024 * 1024;
+    let metadata = std::fs::metadata(path_ref)?;
+    if metadata.len() > MAX_VERIFY_BYTES {
+        return Err(AppError::Validation(
+            "That export file is larger than 256 MB and will not be read into memory.".into(),
         ));
     }
     let bytes = std::fs::read(path_ref)?;

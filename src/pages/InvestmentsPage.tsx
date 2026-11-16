@@ -363,7 +363,8 @@ export function InvestmentsPage() {
     setEditingValuation(valuation);
     setValuationForm({
       accountId: valuation.accountId,
-      instrumentId: valuation.instrumentId ?? instruments[0]?.id ?? "",
+      // An account-level valuation must stay account-level when edited.
+      instrumentId: valuation.instrumentId ?? "",
       asOfDate: valuation.asOfDate,
       value: valuation.value,
       sourceRef: valuation.sourceRef ?? "",
@@ -374,8 +375,8 @@ export function InvestmentsPage() {
 
   const submitValuation = () => {
     setValuationError(null);
-    if (!valuationForm.accountId || !valuationForm.instrumentId) {
-      setValuationError("Choose an account and an instrument.");
+    if (!valuationForm.accountId) {
+      setValuationError("Choose an account.");
       return;
     }
     if (!valuationForm.value.trim()) {
@@ -386,7 +387,7 @@ export function InvestmentsPage() {
       id: editingValuation?.id ?? null,
       input: {
         accountId: valuationForm.accountId,
-        instrumentId: valuationForm.instrumentId,
+        instrumentId: valuationForm.instrumentId || null,
         asOfDate: valuationForm.asOfDate || app.today,
         value: valuationForm.value.trim(),
         sourceRef: valuationForm.sourceRef.trim() || null,
@@ -418,6 +419,12 @@ export function InvestmentsPage() {
       {investmentAccounts.length === 0 ? (
         <Alert tone="warning" title="No investment account">
           Create an account with type “Investment” on the Accounts page before recording trades or valuations.
+        </Alert>
+      ) : null}
+
+      {summaryQuery.isError ? (
+        <Alert tone="error" title="Could not load the portfolio summary">
+          {errorMessage(summaryQuery.error)}
         </Alert>
       ) : null}
 
@@ -537,13 +544,19 @@ export function InvestmentsPage() {
                       </div>
                     </div>
                     <div className="flex shrink-0 items-center gap-1">
-                      <Button size="sm" variant="ghost" onClick={() => openEditInstrument(instrument)}>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        aria-label={`Edit ${instrument.symbol}`}
+                        onClick={() => openEditInstrument(instrument)}
+                      >
                         <Pencil className="h-3 w-3" />
                       </Button>
                       <Button
                         size="sm"
                         variant="ghost"
                         className="text-zinc-600"
+                        aria-label={`Delete ${instrument.symbol}`}
                         disabled={deleteInstrumentMutation.isPending}
                         onClick={() => {
                           if (
@@ -656,7 +669,15 @@ export function InvestmentsPage() {
           </div>
         )
       ) : tab === "trades" ? (
-        trades.length === 0 ? (
+        tradesQuery.isError ? (
+          <Alert tone="error" title="Could not load trades">
+            {errorMessage(tradesQuery.error)}
+          </Alert>
+        ) : tradesQuery.isLoading ? (
+          <div className="flex items-center justify-center py-8 text-zinc-500">
+            <Spinner className="h-4 w-4" />
+          </div>
+        ) : trades.length === 0 ? (
           <EmptyState
             icon={<TrendingUp className="h-5 w-5" />}
             title="No trades recorded"
@@ -673,15 +694,15 @@ export function InvestmentsPage() {
               <table className="w-full min-w-[760px] text-left text-[0.72rem]">
                 <thead className="border-b border-white/[0.06] text-[0.58rem] uppercase tracking-[0.14em] text-zinc-600">
                   <tr>
-                    <th className="px-3 py-2.5 font-medium">Date</th>
-                    <th className="px-3 py-2.5 font-medium">Instrument</th>
-                    <th className="px-3 py-2.5 font-medium">Side</th>
-                    <th className="px-3 py-2.5 font-medium">Account</th>
-                    <th className="px-3 py-2.5 text-right font-medium">Quantity</th>
-                    <th className="px-3 py-2.5 text-right font-medium">Price</th>
-                    <th className="px-3 py-2.5 text-right font-medium">Total</th>
-                    <th className="px-3 py-2.5 text-right font-medium">Fee</th>
-                    <th className="px-3 py-2.5" />
+                    <th scope="col" className="px-3 py-2.5 font-medium">Date</th>
+                    <th scope="col" className="px-3 py-2.5 font-medium">Instrument</th>
+                    <th scope="col" className="px-3 py-2.5 font-medium">Side</th>
+                    <th scope="col" className="px-3 py-2.5 font-medium">Account</th>
+                    <th scope="col" className="px-3 py-2.5 text-right font-medium">Quantity</th>
+                    <th scope="col" className="px-3 py-2.5 text-right font-medium">Price</th>
+                    <th scope="col" className="px-3 py-2.5 text-right font-medium">Total</th>
+                    <th scope="col" className="px-3 py-2.5 text-right font-medium">Fee</th>
+                    <th scope="col" className="px-3 py-2.5" />
                   </tr>
                 </thead>
                 <tbody>
@@ -738,6 +759,14 @@ export function InvestmentsPage() {
             </div>
           </Panel>
         )
+      ) : valuationsQuery.isError ? (
+        <Alert tone="error" title="Could not load valuations">
+          {errorMessage(valuationsQuery.error)}
+        </Alert>
+      ) : valuationsQuery.isLoading ? (
+        <div className="flex items-center justify-center py-8 text-zinc-500">
+          <Spinner className="h-4 w-4" />
+        </div>
       ) : valuations.length === 0 ? (
         <EmptyState
           icon={<Coins className="h-5 w-5" />}
@@ -755,12 +784,12 @@ export function InvestmentsPage() {
             <table className="w-full min-w-[680px] text-left text-[0.72rem]">
               <thead className="border-b border-white/[0.06] text-[0.58rem] uppercase tracking-[0.14em] text-zinc-600">
                 <tr>
-                  <th className="px-3 py-2.5 font-medium">As of</th>
-                  <th className="px-3 py-2.5 font-medium">Instrument</th>
-                  <th className="px-3 py-2.5 font-medium">Account</th>
-                  <th className="px-3 py-2.5 text-right font-medium">Value</th>
-                  <th className="px-3 py-2.5 font-medium">Source</th>
-                  <th className="px-3 py-2.5" />
+                  <th scope="col" className="px-3 py-2.5 font-medium">As of</th>
+                  <th scope="col" className="px-3 py-2.5 font-medium">Instrument</th>
+                  <th scope="col" className="px-3 py-2.5 font-medium">Account</th>
+                  <th scope="col" className="px-3 py-2.5 text-right font-medium">Value</th>
+                  <th scope="col" className="px-3 py-2.5 font-medium">Source</th>
+                  <th scope="col" className="px-3 py-2.5" />
                 </tr>
               </thead>
               <tbody>
@@ -1036,12 +1065,16 @@ export function InvestmentsPage() {
       >
         <div className="space-y-4">
           <div className="grid gap-3 sm:grid-cols-2">
-            <Field label="Instrument">
+            <Field
+              label="Instrument"
+              hint="Choose “Account-level” for a value that covers the whole account."
+            >
               <select
                 className="rawjan-input"
                 value={valuationForm.instrumentId}
                 onChange={(event) => setValuationForm({ ...valuationForm, instrumentId: event.target.value })}
               >
+                <option value="">Account-level (whole account)</option>
                 {instruments.map((instrument) => (
                   <option key={instrument.id} value={instrument.id}>
                     {instrument.symbol} — {instrument.name}

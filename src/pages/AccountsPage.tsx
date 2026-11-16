@@ -157,6 +157,24 @@ export function AccountsPage() {
       setFormError("Give the account a name.");
       return;
     }
+    const parseDay = (raw: string, label: string): number | null | string => {
+      if (!raw) return null;
+      const value = Number(raw);
+      if (!Number.isInteger(value) || value < 1 || value > 31) {
+        return `${label} must be a whole number between 1 and 31.`;
+      }
+      return value;
+    };
+    const statementDay = parseDay(form.statementDay, "Statement day");
+    if (typeof statementDay === "string") {
+      setFormError(statementDay);
+      return;
+    }
+    const paymentDueDay = parseDay(form.paymentDueDay, "Payment due day");
+    if (typeof paymentDueDay === "string") {
+      setFormError(paymentDueDay);
+      return;
+    }
     const input: AccountInput = {
       name: form.name.trim(),
       accountType: form.accountType,
@@ -165,8 +183,8 @@ export function AccountsPage() {
       openingBalance: form.openingBalance.trim() || null,
       openingDate: form.openingDate || null,
       creditLimit: form.creditLimit.trim() || null,
-      statementDay: form.statementDay ? Number(form.statementDay) : null,
-      paymentDueDay: form.paymentDueDay ? Number(form.paymentDueDay) : null,
+      statementDay,
+      paymentDueDay,
       notes: form.notes.trim() || null,
     };
     createMutation.mutate(input);
@@ -198,6 +216,7 @@ export function AccountsPage() {
           <input
             className="rawjan-input h-9 pl-8 text-xs"
             placeholder="Search accounts…"
+            aria-label="Search accounts"
             value={search}
             onChange={(event) => setSearch(event.target.value)}
           />
@@ -484,8 +503,9 @@ function AccountCard({
   busy: boolean;
 }) {
   const Icon = TYPE_ICON[account.accountType] ?? Wallet;
-  const limit = account.creditLimitMinor;
-  const used = limit && limit > 0 ? Math.min(100, Math.max(0, (Math.abs(account.balanceMinor) / limit) * 100)) : null;
+  // Percentage computed in Rust (creditUsedPercent); the frontend never
+  // divides money values.
+  const used = account.creditUsedPercent;
 
   return (
     <Panel
@@ -533,7 +553,7 @@ function AccountCard({
         <div className="mt-3">
           <div className="flex items-center justify-between text-[0.6rem] text-zinc-600">
             <span>Credit used</span>
-            <span>{Math.round(used)}%</span>
+            <span>{used}%</span>
           </div>
           <div className="mt-1 h-1 overflow-hidden rounded-full bg-white/[0.05]">
             <div className="h-full rounded-full bg-lily-500/80" style={{ width: `${used}%` }} />

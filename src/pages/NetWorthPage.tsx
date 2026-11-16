@@ -21,13 +21,9 @@ interface CompositionRow {
   label: string;
   minor: number;
   display: string;
+  percent: number;
   tone: string;
   icon: typeof Wallet;
-}
-
-function share(part: number, whole: number): number {
-  if (!Number.isFinite(part) || !Number.isFinite(whole) || whole <= 0) return 0;
-  return Math.min(100, Math.max(0, (part / whole) * 100));
 }
 
 function SnapshotChart({ snapshots, currency }: { snapshots: NetWorthSnapshot[]; currency: string }) {
@@ -155,6 +151,7 @@ export function NetWorthPage() {
           label: "Liquid cash",
           minor: current.cashMinor,
           display: current.cash,
+          percent: current.cashPercent,
           tone: "bg-sage-500/80",
           icon: Wallet,
         },
@@ -163,6 +160,7 @@ export function NetWorthPage() {
           label: "Investments",
           minor: current.investedMinor,
           display: current.invested,
+          percent: current.investedPercent,
           tone: "bg-lily-500/80",
           icon: LineChart,
         },
@@ -173,6 +171,7 @@ export function NetWorthPage() {
                 label: "Money lent",
                 minor: current.receivablesMinor,
                 display: current.receivables,
+                percent: current.receivablesPercent,
                 tone: "bg-champagne-300/70",
                 icon: HandCoins,
               },
@@ -183,6 +182,7 @@ export function NetWorthPage() {
           label: "Other assets",
           minor: current.otherAssetsMinor,
           display: current.otherAssets,
+          percent: current.otherAssetsPercent,
           tone: "bg-champagne-500/70",
           icon: Sparkles,
         },
@@ -221,7 +221,7 @@ export function NetWorthPage() {
         </Alert>
       ) : null}
 
-      {overviewQuery.isLoading || !current ? (
+      {overviewQuery.isError ? null : overviewQuery.isLoading || !current ? (
         <div className="flex items-center justify-center py-16 text-zinc-500">
           <Spinner className="h-5 w-5" />
         </div>
@@ -317,7 +317,7 @@ export function NetWorthPage() {
                       <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-white/[0.05]">
                         <div
                           className={clsx("h-full rounded-full", row.tone)}
-                          style={{ width: `${share(row.minor, current.assetsMinor)}%` }}
+                          style={{ width: `${Math.min(100, row.percent)}%` }}
                         />
                       </div>
                     </div>
@@ -380,11 +380,11 @@ export function NetWorthPage() {
                   <table className="w-full border-collapse text-left text-[0.68rem]">
                     <thead>
                       <tr className="text-[0.56rem] uppercase tracking-[0.14em] text-zinc-600">
-                        <th className="py-1.5 pr-2 font-medium">Date</th>
-                        <th className="py-1.5 pr-2 text-right font-medium">Assets</th>
-                        <th className="py-1.5 pr-2 text-right font-medium">Liabilities</th>
-                        <th className="py-1.5 pr-2 text-right font-medium">Net</th>
-                        <th className="py-1.5 pl-1 text-right font-medium"> </th>
+                        <th scope="col" className="py-1.5 pr-2 font-medium">Date</th>
+                        <th scope="col" className="py-1.5 pr-2 text-right font-medium">Assets</th>
+                        <th scope="col" className="py-1.5 pr-2 text-right font-medium">Liabilities</th>
+                        <th scope="col" className="py-1.5 pr-2 text-right font-medium">Net</th>
+                        <th scope="col" className="py-1.5 pl-1 text-right font-medium"> </th>
                       </tr>
                     </thead>
                     <tbody>

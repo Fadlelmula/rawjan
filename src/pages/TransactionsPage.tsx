@@ -146,6 +146,7 @@ export function TransactionsPage() {
             <input
               className="rawjan-input h-9 pl-8 text-xs"
               placeholder="Search description, payee or notes…"
+              aria-label="Search transactions"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
               onKeyDown={(event) => {
@@ -325,13 +326,13 @@ export function TransactionsPage() {
             <table className="w-full min-w-[880px] border-collapse text-left">
               <thead>
                 <tr className="border-b border-white/[0.055] text-[0.56rem] uppercase tracking-[0.16em] text-zinc-600">
-                  <th className="px-4 py-2.5 font-semibold">Date</th>
-                  <th className="px-2 py-2.5 font-semibold">Description</th>
-                  <th className="px-2 py-2.5 font-semibold">Account</th>
-                  <th className="px-2 py-2.5 font-semibold">Category</th>
-                  <th className="px-2 py-2.5 font-semibold">Status</th>
-                  <th className="px-2 py-2.5 text-right font-semibold">Amount</th>
-                  <th className="px-4 py-2.5 text-right font-semibold">Base</th>
+                  <th scope="col" className="px-4 py-2.5 font-semibold">Date</th>
+                  <th scope="col" className="px-2 py-2.5 font-semibold">Description</th>
+                  <th scope="col" className="px-2 py-2.5 font-semibold">Account</th>
+                  <th scope="col" className="px-2 py-2.5 font-semibold">Category</th>
+                  <th scope="col" className="px-2 py-2.5 font-semibold">Status</th>
+                  <th scope="col" className="px-2 py-2.5 text-right font-semibold">Amount</th>
+                  <th scope="col" className="px-4 py-2.5 text-right font-semibold">Base</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/[0.04]">

@@ -209,11 +209,19 @@ export function BudgetsPage() {
         return;
       }
     }
+    let cycleStartDay: number | null = null;
+    if (form.periodType === "cycle_month") {
+      cycleStartDay = Number(form.cycleStartDay);
+      if (!Number.isInteger(cycleStartDay) || cycleStartDay < 1 || cycleStartDay > 31) {
+        setFormError("Cycle start day must be a whole number between 1 and 31.");
+        return;
+      }
+    }
     const input: BudgetInput = {
       name: form.name.trim(),
       method: form.method,
       periodType: form.periodType,
-      cycleStartDay: form.periodType === "cycle_month" ? Number(form.cycleStartDay) || 28 : null,
+      cycleStartDay,
       rolloverPolicy: form.rolloverPolicy,
       currencyCode: form.currencyCode,
       startDate: form.startDate || app.today,
@@ -376,10 +384,14 @@ export function BudgetsPage() {
           </div>
 
           <div className="grid gap-3 sm:grid-cols-2">
-            <Field label="Rollover policy">
+            <Field
+              label="Rollover policy"
+              hint="Carry-over is not applied to period totals yet, so this choice has no effect today."
+            >
               <select
-                className="rawjan-input"
+                className="rawjan-input opacity-60"
                 value={form.rolloverPolicy}
+                disabled
                 onChange={(event) => setForm({ ...form, rolloverPolicy: event.target.value })}
               >
                 {ROLLOVER.map((policy) => (
@@ -638,7 +650,14 @@ function BudgetCard({
           {budget.isActive ? <Pause className="h-3 w-3" /> : <Play className="h-3 w-3" />}
           {budget.isActive ? "Pause" : "Resume"}
         </Button>
-        <Button size="sm" variant="ghost" onClick={onDelete} disabled={busy} className="ml-auto text-zinc-500">
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={onDelete}
+          disabled={busy}
+          className="ml-auto text-zinc-500"
+          aria-label={`Delete budget ${budget.name}`}
+        >
           <Trash2 className="h-3 w-3" />
         </Button>
       </div>

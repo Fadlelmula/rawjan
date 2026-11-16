@@ -28,6 +28,8 @@ pub struct AccountDto {
     pub credit_limit_minor: Option<i64>,
     pub available_minor: Option<i64>,
     pub available: Option<String>,
+    /// Credit used as percent of the limit (0–100), computed in Rust.
+    pub credit_used_percent: Option<i64>,
     pub statement_day: Option<i64>,
     pub payment_due_day: Option<i64>,
     pub broker_id: Option<String>,
@@ -275,8 +277,22 @@ pub fn list_accounts(
             base_currency: base_currency.clone(),
             rate_missing,
             credit_limit_minor: credit_limit,
-            available_minor: credit_limit.map(|limit| limit + balance_minor),
-            available: credit_limit.map(|limit| format_amount(limit + balance_minor, account_exp)),
+            available_minor: match credit_limit {
+                Some(limit) => Some(crate::money::checked_sum(
+                    [limit, balance_minor].into_iter(),
+                )?),
+                None => None,
+            },
+            available: match credit_limit {
+                Some(limit) => Some(format_amount(
+                    crate::money::checked_sum([limit, balance_minor].into_iter())?,
+                    account_exp,
+                )),
+                None => None,
+            },
+            credit_used_percent: credit_limit.filter(|limit| *limit > 0).map(|limit| {
+                ((balance_minor.unsigned_abs() as i128 * 100) / limit as i128).clamp(0, 100) as i64
+            }),
             statement_day,
             payment_due_day,
             broker_id,
@@ -426,7 +442,6 @@ pub fn create_account(
             now
         ],
     )?;
-    db_tx.commit()?;
 
     if opening_minor != 0 {
         let mut op = crate::services::tx::TxInput {
@@ -459,17 +474,13 @@ pub fn create_account(
         if opening_minor < 0 {
             op.amount = format_minor_input(-opening_minor, meta.exponent);
         }
-        match crate::services::tx::create_transaction(conn, tenant_id, user_id, &op) {
-            Ok(_) => {}
-            Err(e) => {
-                conn.execute("DELETE FROM accounts WHERE id = ?1", [&id])?;
-                return Err(e);
-            }
-        }
+        // Same transaction as the account insert: a failure here must leave
+        // neither the account nor a half-created opening entry behind.
+        crate::services::tx::create_transaction_on(&db_tx, tenant_id, user_id, &op)?;
     }
 
     crate::db::audit(
-        conn,
+        &db_tx,
         tenant_id,
         user_id,
         "account",
@@ -483,6 +494,7 @@ pub fn create_account(
             "openingBalanceMinor": opening_minor
         })),
     )?;
+    db_tx.commit()?;
     Ok(id)
 }
 
@@ -632,6 +644,15 @@ pub struct NetWorth {
     pub receivables: String,
     pub other_assets_minor: i64,
     pub other_assets: String,
+    /// Share of the gross position (assets + liabilities) in whole percent.
+    /// `None` when there is nothing to divide.
+    pub asset_share_percent: Option<i64>,
+    pub liability_share_percent: Option<i64>,
+    /// Composition as percent of assets; 0 when assets are not positive.
+    pub cash_percent: i64,
+    pub invested_percent: i64,
+    pub receivables_percent: i64,
+    pub other_assets_percent: i64,
     pub missing_rates: Vec<String>,
     pub accounts_included: i64,
 }
@@ -697,13 +718,14 @@ pub fn net_worth(conn: &Connection, tenant_id: &str, on_date: Option<&str>) -> A
             }
         };
         if *is_liability {
-            liabilities += converted.abs();
+            liabilities =
+                crate::money::checked_sum([liabilities, converted.saturating_abs()].into_iter())?;
         } else {
-            assets += converted;
+            assets = crate::money::checked_sum([assets, converted].into_iter())?;
             if account_type == "investment" {
-                invested += converted;
+                invested = crate::money::checked_sum([invested, converted].into_iter())?;
             } else if *is_liquid {
-                cash += converted;
+                cash = crate::money::checked_sum([cash, converted].into_iter())?;
             }
         }
     }
@@ -736,7 +758,7 @@ pub fn net_worth(conn: &Connection, tenant_id: &str, on_date: Option<&str>) -> A
                 }
             }
         };
-        liabilities += converted;
+        liabilities = crate::money::checked_sum([liabilities, converted].into_iter())?;
     }
 
     // Money lent to someone is a receivable: it belongs on the asset side.
@@ -766,12 +788,32 @@ pub fn net_worth(conn: &Connection, tenant_id: &str, on_date: Option<&str>) -> A
                 }
             }
         };
-        assets += converted;
-        receivable_total += converted;
+        assets = crate::money::checked_sum([assets, converted].into_iter())?;
+        receivable_total = crate::money::checked_sum([receivable_total, converted].into_iter())?;
     }
 
-    let net = assets - liabilities;
-    let other_assets = assets - cash - invested - receivable_total;
+    let net = crate::money::checked_diff(assets, liabilities)?;
+    let other_assets = crate::money::checked_diff(
+        assets,
+        crate::money::checked_sum([cash, invested, receivable_total].into_iter())?,
+    )?;
+    // Displayed percentages are computed here, never in the frontend.
+    let gross = (assets.max(0) as i128) + (liabilities.max(0) as i128);
+    let (asset_share_percent, liability_share_percent) = if gross > 0 {
+        (
+            Some(((assets.max(0) as i128 * 100) / gross) as i64),
+            Some(((liabilities.max(0) as i128 * 100) / gross) as i64),
+        )
+    } else {
+        (None, None)
+    };
+    let share_of_assets = |part: i64| -> i64 {
+        if assets > 0 {
+            ((part.max(0) as i128 * 100) / assets as i128) as i64
+        } else {
+            0
+        }
+    };
     Ok(NetWorth {
         as_of_date: date,
         currency: base_currency.clone(),
@@ -789,6 +831,12 @@ pub fn net_worth(conn: &Connection, tenant_id: &str, on_date: Option<&str>) -> A
         receivables: format_amount(receivable_total, base_exp),
         other_assets_minor: other_assets,
         other_assets: format_amount(other_assets, base_exp),
+        asset_share_percent,
+        liability_share_percent,
+        cash_percent: share_of_assets(cash),
+        invested_percent: share_of_assets(invested),
+        receivables_percent: share_of_assets(receivable_total),
+        other_assets_percent: share_of_assets(other_assets),
         missing_rates: {
             missing.sort();
             missing.dedup();
@@ -832,36 +880,4 @@ pub fn save_net_worth_snapshot(conn: &Connection, tenant_id: &str) -> AppResult<
         ],
     )?;
     Ok(worth)
-}
-
-pub fn account_balance_in_base(
-    conn: &Connection,
-    tenant_id: &str,
-    account_id: &str,
-) -> AppResult<i64> {
-    let (currency, ledger): (String, i64) = conn
-        .query_row(
-            "SELECT a.currency_code, COALESCE(SUM(CASE WHEN le.entry_type='debit' THEN le.amount_minor ELSE -le.amount_minor END),0)
-             FROM accounts a
-             LEFT JOIN ledger_entries le ON le.account_id = a.id
-             LEFT JOIN transactions t ON t.id = le.transaction_id AND t.status IN ('posted','reconciled','reversed')
-             WHERE a.id = ?1 AND a.tenant_id = ?2 GROUP BY a.id",
-            params![account_id, tenant_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .optional()?
-        .ok_or_else(|| AppError::NotFound("Account not found.".into()))?;
-    let base = primary_currency(conn, tenant_id)?;
-    if currency == base {
-        return Ok(ledger);
-    }
-    let (converted, _) = convert_to_currency(
-        conn,
-        tenant_id,
-        ledger,
-        &currency,
-        &base,
-        &iso(today_local()),
-    )?;
-    Ok(converted)
 }

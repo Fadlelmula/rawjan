@@ -89,7 +89,7 @@ export function CalendarPage() {
         </Alert>
       ) : null}
 
-      {calendarQuery.isLoading || !calendar ? (
+      {calendarQuery.isError ? null : calendarQuery.isLoading || !calendar ? (
         <div className="flex items-center justify-center py-16 text-zinc-500">
           <Spinner className="h-5 w-5" />
         </div>

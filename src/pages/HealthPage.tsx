@@ -114,7 +114,7 @@ export function HealthPage() {
         </Alert>
       ) : null}
 
-      {reportQuery.isLoading || !report ? (
+      {reportQuery.isError ? null : reportQuery.isLoading || !report ? (
         <div className="flex items-center justify-center py-16 text-zinc-500">
           <Spinner className="h-5 w-5" />
         </div>
@@ -249,7 +249,7 @@ export function HealthPage() {
         </>
       )}
 
-      {reportQuery.isSuccess && !report ? (
+      {report && report.components.every((component) => !component.available) ? (
         <EmptyState
           icon={<Flame className="h-5 w-5" />}
           title="Nothing to score yet"

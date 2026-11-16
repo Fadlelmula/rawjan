@@ -6,8 +6,9 @@ use serde_json::json;
 use crate::dates::now_iso;
 use crate::error::{AppError, AppResult};
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 const MIGRATION_0001: &str = include_str!("../migrations/0001_init.sql");
+const MIGRATION_0002: &str = include_str!("../migrations/0002_integrity_indexes.sql");
 
 pub fn open(path: &Path, key_hex: Option<&str>) -> AppResult<Connection> {
     let conn = Connection::open(path)?;
@@ -56,7 +57,13 @@ pub fn apply_migrations(conn: &mut Connection) -> AppResult<()> {
     if current < 1 {
         let tx = conn.transaction()?;
         tx.execute_batch(MIGRATION_0001)?;
-        tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        tx.pragma_update(None, "user_version", 1)?;
+        tx.commit()?;
+    }
+    if current < 2 {
+        let tx = conn.transaction()?;
+        tx.execute_batch(MIGRATION_0002)?;
+        tx.pragma_update(None, "user_version", 2)?;
         tx.commit()?;
     }
     Ok(())
@@ -74,8 +81,18 @@ pub fn resolve_database_key() -> AppResult<(Option<String>, bool)> {
     }
     let entry = keyring::Entry::new("rawjan-finance", "database-key")?;
     match entry.get_password() {
-        Ok(existing) if existing.len() == 64 => Ok((Some(existing), true)),
-        Ok(_) | Err(keyring::Error::NoEntry) => {
+        Ok(existing) if existing.len() == 64 && existing.bytes().all(|b| b.is_ascii_hexdigit()) => {
+            Ok((Some(existing), true))
+        }
+        Ok(_) => {
+            // A malformed stored secret must never be silently overwritten:
+            // generating a new key here would make the existing vault
+            // unopenable and destroy the only key to it.
+            Err(AppError::Internal(
+                "The stored database key is malformed. Rawjan will not overwrite it. Repair the entry in Windows Credential Manager (service 'rawjan-finance', account 'database-key') or restore a backup using RAWJAN_DB_KEY.".into(),
+            ))
+        }
+        Err(keyring::Error::NoEntry) => {
             let mut buf = [0u8; 32];
             getrandom::fill(&mut buf)
                 .map_err(|e| AppError::Internal(format!("secure random generation failed: {e}")))?;
@@ -493,6 +510,19 @@ pub fn set_setting_value(
     Ok(())
 }
 
+/// Wrap user text for a SQL `LIKE '%…%'` "contains" match with `%`, `_` and
+/// the escape character escaped, so search input can never alter the pattern
+/// itself. Uses `!` as the LIKE escape character.
+pub fn like_contains(value: &str) -> String {
+    let escaped = value
+        .trim()
+        .to_lowercase()
+        .replace('!', "!!")
+        .replace('%', "!%")
+        .replace('_', "!_");
+    format!("%{escaped}%")
+}
+
 pub fn audit(
     conn: &Connection,
     tenant_id: &str,
@@ -570,5 +600,110 @@ mod tests {
         }
         // Opening the same file without a key must not silently expose plaintext.
         assert!(open(&path, None).is_err());
+    }
+
+    #[test]
+    fn migration_0002_preserves_rows_and_enforces_new_constraints() {
+        // Build a schema-1 database with real rows, then upgrade.
+        let mut conn = Connection::open_in_memory().expect("in-memory database");
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        conn.execute_batch(MIGRATION_0001).unwrap();
+        conn.pragma_update(None, "user_version", 1).unwrap();
+        let (tenant, user) = seed_if_empty(&mut conn).unwrap();
+        let now = crate::dates::now_iso();
+
+        conn.execute(
+            "INSERT INTO accounts (id, tenant_id, user_id, name, type, currency_code, is_liability, is_liquid,
+                opening_balance_minor, created_at, updated_at)
+             VALUES ('acct', ?1, ?2, 'Brokerage', 'investment', 'QAR', 0, 0, 0, ?3, ?3)",
+            rusqlite::params![tenant, user, now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO instruments (id, tenant_id, symbol, name, asset_class, currency_code, exchange, isin, notes, created_at)
+             VALUES ('inst', ?1, 'FUND', 'Fund', 'etf', 'QAR', NULL, NULL, NULL, ?2)",
+            rusqlite::params![tenant, now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO liabilities (id, tenant_id, user_id, name, type, principal_minor, outstanding_minor,
+                currency_code, interest_rate_bps, payment_minor, status, created_at, updated_at)
+             VALUES ('debt', ?1, ?2, 'Loan', 'loan', 100000, 100000, 'QAR', 0, 0, 'active', ?3, ?3)",
+            rusqlite::params![tenant, user, now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO liability_payments (id, tenant_id, liability_id, paid_on, amount_minor,
+                principal_minor, interest_minor, fee_minor, transaction_id, note, created_at)
+             VALUES ('pay', ?1, 'debt', '2026-11-01', 5000, 4800, 200, 0, NULL, NULL, ?2)",
+            rusqlite::params![tenant, now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO investment_trades (id, tenant_id, user_id, account_id, instrument_id, side, trade_date,
+                quantity_scaled, price_scaled, price_scale, fee_minor, currency_code, fx_rate_id, transaction_id, notes, created_at)
+             VALUES ('trade', ?1, ?2, 'acct', 'inst', 'buy', '2026-11-01', 100, 1000, 8, 0, 'QAR', NULL, NULL, NULL, ?3)",
+            rusqlite::params![tenant, user, now],
+        )
+        .unwrap();
+        // Two valuations for the same holding and day: the older must go.
+        conn.execute(
+            "INSERT INTO investment_valuations (id, tenant_id, account_id, instrument_id, as_of_date,
+                quantity_scaled, price_scaled, price_scale, value_minor, currency_code, source, source_ref, created_at)
+             VALUES ('v-old', ?1, 'acct', 'inst', '2026-11-01', 0, 0, 8, 100, 'QAR', 'manual', NULL, '2026-11-01T00:00:00Z')",
+            [&tenant],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO investment_valuations (id, tenant_id, account_id, instrument_id, as_of_date,
+                quantity_scaled, price_scaled, price_scale, value_minor, currency_code, source, source_ref, created_at)
+             VALUES ('v-new', ?1, 'acct', 'inst', '2026-11-01', 0, 0, 8, 200, 'QAR', 'manual', NULL, '2026-11-02T00:00:00Z')",
+            [&tenant],
+        )
+        .unwrap();
+
+        apply_migrations(&mut conn).expect("upgrade to schema 2");
+
+        // Rows survive the rebuild.
+        let payments: i64 = conn
+            .query_row("SELECT COUNT(*) FROM liability_payments", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(payments, 1);
+        let trades: i64 = conn
+            .query_row("SELECT COUNT(*) FROM investment_trades", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(trades, 1);
+        // Duplicate valuations are collapsed to the latest one.
+        let (valuations, value): (i64, i64) = conn
+            .query_row(
+                "SELECT COUNT(*), MAX(value_minor) FROM investment_valuations",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(valuations, 1);
+        assert_eq!(value, 200, "the later valuation must win");
+
+        // New constraints are live.
+        let negative = conn.execute(
+            "INSERT INTO liability_payments (id, tenant_id, liability_id, paid_on, amount_minor,
+                principal_minor, interest_minor, fee_minor, transaction_id, note, created_at)
+             VALUES ('bad', ?1, 'debt', '2026-11-02', 100, -1, 0, 0, NULL, NULL, ?2)",
+            rusqlite::params![tenant, now],
+        );
+        assert!(
+            negative.is_err(),
+            "negative payment components must be rejected"
+        );
+        let duplicate = conn.execute(
+            "INSERT INTO investment_valuations (id, tenant_id, account_id, instrument_id, as_of_date,
+                quantity_scaled, price_scaled, price_scale, value_minor, currency_code, source, source_ref, created_at)
+             VALUES ('v-dup', ?1, 'acct', 'inst', '2026-11-01', 0, 0, 8, 300, 'QAR', 'manual', NULL, ?2)",
+            rusqlite::params![tenant, now],
+        );
+        assert!(
+            duplicate.is_err(),
+            "duplicate same-day valuations must be rejected"
+        );
     }
 }

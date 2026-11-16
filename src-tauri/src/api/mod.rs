@@ -326,6 +326,26 @@ pub fn update_setting(state: State<'_, AppState>, input: SettingInput) -> AppRes
     if key.is_empty() {
         return Err(AppError::Validation("Setting key is required.".into()));
     }
+    // Settings are a closed vocabulary: unknown keys are rejected so arbitrary
+    // values can never be smuggled into `tenant_settings` (and from there into
+    // the audit trail and encrypted exports).
+    const SETTING_KEYS: &[&str] = &[
+        "primary_currency",
+        "locale",
+        "budget_cycle_start_day",
+        "salary_pay_day",
+        "onboarding_completed",
+        "backup_enabled",
+        "backup_retention_days",
+        "backup_time",
+        "app_lock",
+        "emergency_fund_months",
+    ];
+    if !SETTING_KEYS.contains(&key) {
+        return Err(AppError::Validation(format!(
+            "'{key}' is not a known setting."
+        )));
+    }
     match key {
         "primary_currency" => {
             let code = input.value.as_str().ok_or_else(|| {
@@ -387,7 +407,14 @@ pub fn update_setting(state: State<'_, AppState>, input: SettingInput) -> AppRes
         _ => {}
     }
 
-    let before = db::get_setting_value(&conn, &state.tenant_id, key)?;
+    // `app_lock` may hold credential material in the future; its values are
+    // never copied into the audit trail.
+    let sensitive = key == "app_lock";
+    let before = if sensitive {
+        None
+    } else {
+        db::get_setting_value(&conn, &state.tenant_id, key)?
+    };
     db::set_setting_value(&conn, &state.tenant_id, key, &input.value)?;
     db::audit(
         &conn,
@@ -397,7 +424,7 @@ pub fn update_setting(state: State<'_, AppState>, input: SettingInput) -> AppRes
         key,
         "update",
         before.as_ref(),
-        Some(&input.value),
+        if sensitive { None } else { Some(&input.value) },
     )?;
     Ok(input.value)
 }

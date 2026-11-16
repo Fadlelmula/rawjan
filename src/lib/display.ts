@@ -59,6 +59,16 @@ export function formatDateLong(value: string): string {
   return `${MONTHS_LONG[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()}`;
 }
 
+/** Format an ISO timestamp (with time) in local time, e.g. "16 Nov 2026, 14:03". */
+export function formatDateTime(value: string): string {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  const month = MONTHS[parsed.getMonth()];
+  const hours = String(parsed.getHours()).padStart(2, "0");
+  const minutes = String(parsed.getMinutes()).padStart(2, "0");
+  return `${parsed.getDate()} ${month} ${parsed.getFullYear()}, ${hours}:${minutes}`;
+}
+
 export function monthLabel(value: string): string {
   const date = parseLocalDate(value);
   if (!date) return value;

@@ -580,6 +580,18 @@ pub fn set_goal_status(
 }
 
 pub fn delete_goal(conn: &Connection, tenant_id: &str, user_id: &str, id: &str) -> AppResult<()> {
+    // Contributions are financial records; deleting the goal must not cascade
+    // them away. Archive the goal instead.
+    let contributions: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM goal_contributions WHERE goal_id = ?1 AND tenant_id = ?2",
+        params![id, tenant_id],
+        |r| r.get(0),
+    )?;
+    if contributions > 0 {
+        return Err(AppError::Conflict(format!(
+            "This goal has {contributions} recorded contribution(s). Archive it instead of deleting it so the contribution history is preserved."
+        )));
+    }
     let changed = conn.execute(
         "DELETE FROM goals WHERE id = ?1 AND tenant_id = ?2",
         params![id, tenant_id],
@@ -731,10 +743,10 @@ mod tests {
     }
 
     #[test]
-    fn deleting_a_goal_removes_its_contributions() {
+    fn deleting_a_goal_preserves_contribution_history() {
         let (conn, tenant, user) = setup();
         let goal_id = save_goal(&conn, &tenant, &user, None, &goal_input("500.00", None)).unwrap();
-        add_contribution(
+        let contribution_id = add_contribution(
             &conn,
             &tenant,
             &user,
@@ -747,10 +759,22 @@ mod tests {
             },
         )
         .unwrap();
-        delete_goal(&conn, &tenant, &user, &goal_id).unwrap();
+
+        // A goal with recorded history cannot be deleted outright: the
+        // contributions are financial records and must survive.
+        let error = delete_goal(&conn, &tenant, &user, &goal_id).unwrap_err();
+        assert!(matches!(error, AppError::Conflict(_)));
         let remaining: i64 = conn
             .query_row("SELECT COUNT(*) FROM goal_contributions", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(remaining, 0);
+        assert_eq!(remaining, 1, "the contribution must not be cascade-deleted");
+
+        // Removing each contribution explicitly still allows deletion.
+        delete_contribution(&conn, &tenant, &user, &contribution_id).unwrap();
+        delete_goal(&conn, &tenant, &user, &goal_id).unwrap();
+        let goals: i64 = conn
+            .query_row("SELECT COUNT(*) FROM goals", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(goals, 0);
     }
 }

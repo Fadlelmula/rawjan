@@ -8,7 +8,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { api, errorMessage } from "@/lib/api";
-import { formatDate, KIND_LABELS, signedAmount, STATUS_LABELS, titleCase } from "@/lib/display";
+import { formatDate, formatDateTime, KIND_LABELS, signedAmount, STATUS_LABELS, titleCase } from "@/lib/display";
 import { useToast } from "@/components/Toast";
 import { Alert, Badge, Button, Modal, Spinner } from "@/components/ui";
 
@@ -217,7 +217,7 @@ export function TransactionDetailModal({
             <DetailRow label="Payee" value={transaction.payee ?? "—"} />
             <DetailRow label="Category" value={transaction.categoryName ?? (transaction.isSplit ? "Split" : "—")} />
             <DetailRow label="Local date" value={formatDate(transaction.localDate)} />
-            <DetailRow label="Occurred at" value={transaction.occurredAt.replace("T", " ").replace("Z", " UTC")} />
+            <DetailRow label="Occurred at" value={formatDateTime(transaction.occurredAt)} />
             <DetailRow label="Created" value={transaction.createdAt.replace("T", " ").replace("Z", " UTC")} />
             <DetailRow label="Posted" value={transaction.postedAt?.replace("T", " ").replace("Z", " UTC") ?? "—"} />
             <DetailRow label="External reference" value={transaction.externalRef ?? "—"} />

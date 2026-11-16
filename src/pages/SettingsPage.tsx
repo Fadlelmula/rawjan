@@ -17,7 +17,7 @@ import {
 import { api, errorMessage } from "@/lib/api";
 import type { AuditEvent, ExchangeRate, IntegrationStatus } from "@/lib/api";
 import { useBootstrap } from "@/lib/bootstrap";
-import { formatDate, titleCase } from "@/lib/display";
+import { formatDate, formatDateTime, titleCase } from "@/lib/display";
 import { useToast } from "@/components/Toast";
 import { Alert, Badge, Button, Field, Panel, SectionLabel, Spinner } from "@/components/ui";
 
@@ -248,7 +248,9 @@ function PreferencesTab() {
               disabled={mutation.isPending}
               onBlur={(event) => {
                 const value = Number(event.target.value);
-                if (Number.isFinite(value) && value !== cycleDay) save("budget_cycle_start_day", value);
+                if (Number.isInteger(value) && value >= 1 && value <= 31 && value !== cycleDay) {
+                  save("budget_cycle_start_day", value);
+                }
               }}
             />
           </Field>
@@ -262,7 +264,9 @@ function PreferencesTab() {
               disabled={mutation.isPending}
               onBlur={(event) => {
                 const value = Number(event.target.value);
-                if (Number.isFinite(value) && value !== payDay) save("salary_pay_day", value);
+                if (Number.isInteger(value) && value >= 1 && value <= 31 && value !== payDay) {
+                  save("salary_pay_day", value);
+                }
               }}
             />
           </Field>
@@ -276,7 +280,9 @@ function PreferencesTab() {
               disabled={mutation.isPending}
               onBlur={(event) => {
                 const value = Number(event.target.value);
-                if (Number.isFinite(value) && value !== emergencyMonths) save("emergency_fund_months", value);
+                if (Number.isInteger(value) && value >= 1 && value <= 36 && value !== emergencyMonths) {
+                  save("emergency_fund_months", value);
+                }
               }}
             />
           </Field>
@@ -297,9 +303,9 @@ function PreferencesTab() {
             <input
               type="checkbox"
               checked={backupEnabled}
-              disabled={mutation.isPending}
-              onChange={(event) => save("backup_enabled", event.target.checked)}
-              className="h-4 w-4 accent-[#b0243a]"
+              disabled
+              title="Automatic scheduling is not implemented yet"
+              className="h-4 w-4 accent-[#b0243a] opacity-60"
             />
           </label>
           <Field label="Retention (days)">
@@ -312,7 +318,9 @@ function PreferencesTab() {
               disabled={mutation.isPending}
               onBlur={(event) => {
                 const value = Number(event.target.value);
-                if (Number.isFinite(value) && value !== retention) save("backup_retention_days", value);
+                if (Number.isInteger(value) && value >= 1 && value <= 3650 && value !== retention) {
+                  save("backup_retention_days", value);
+                }
               }}
             />
           </Field>
@@ -453,8 +461,14 @@ function CurrenciesTab() {
       <Panel className="p-5">
         <div className="flex items-center justify-between">
           <SectionLabel>Stored rate snapshots</SectionLabel>
-          <Button size="sm" variant="ghost" onClick={() => void rates.refetch()} disabled={rates.isFetching}>
-            <RefreshCw className={clsx("h-3.5 w-3.5", rates.isFetching && "animate-spin")} />
+          <Button
+            size="sm"
+            variant="ghost"
+            aria-label="Refresh rate snapshots"
+            onClick={() => void rates.refetch()}
+            disabled={rates.isFetching}
+          >
+            <RefreshCw className={clsx("h-3.5 w-3.5", rates.isFetching && "animate-spin")} aria-hidden="true" />
           </Button>
         </div>
         {rates.isLoading ? (
@@ -475,10 +489,10 @@ function CurrenciesTab() {
             <table className="w-full text-left text-[0.7rem]">
               <thead>
                 <tr className="border-b border-white/[0.055] text-[0.56rem] uppercase tracking-[0.15em] text-zinc-600">
-                  <th className="px-3 py-2 font-semibold">Pair</th>
-                  <th className="px-2 py-2 text-right font-semibold">Rate</th>
-                  <th className="px-2 py-2 font-semibold">As of</th>
-                  <th className="px-3 py-2 font-semibold">Source</th>
+                  <th scope="col" className="px-3 py-2 font-semibold">Pair</th>
+                  <th scope="col" className="px-2 py-2 text-right font-semibold">Rate</th>
+                  <th scope="col" className="px-2 py-2 font-semibold">As of</th>
+                  <th scope="col" className="px-3 py-2 font-semibold">Source</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/[0.04]">
@@ -569,8 +583,14 @@ function ActivityTab() {
             Append-only local record of mutations. Financial entries use reversal, not deletion.
           </div>
         </div>
-        <Button size="sm" variant="ghost" onClick={() => void audit.refetch()} disabled={audit.isFetching}>
-          <RefreshCw className={clsx("h-3.5 w-3.5", audit.isFetching && "animate-spin")} />
+        <Button
+          size="sm"
+          variant="ghost"
+          aria-label="Refresh audit trail"
+          onClick={() => void audit.refetch()}
+          disabled={audit.isFetching}
+        >
+          <RefreshCw className={clsx("h-3.5 w-3.5", audit.isFetching && "animate-spin")} aria-hidden="true" />
         </Button>
       </div>
       {audit.isLoading ? (
@@ -600,7 +620,7 @@ function ActivityTab() {
                   <span className="text-zinc-600">{event.entityId.slice(0, 8)}</span>
                 </div>
                 <div className="truncate text-[0.6rem] text-zinc-600">
-                  {event.createdAt.replace("T", " ").replace("Z", " UTC")}
+                  {formatDateTime(event.createdAt)}
                 </div>
               </div>
             </li>

@@ -5,7 +5,7 @@ import clsx from "clsx";
 import { ArrowDownRight, ArrowUpRight, ChartColumn, Users } from "lucide-react";
 import { api, errorMessage } from "@/lib/api";
 import { useBootstrap } from "@/lib/bootstrap";
-import { formatDate, money, percentOf } from "@/lib/display";
+import { formatDate, money } from "@/lib/display";
 import { Alert, Badge, Button, EmptyState, Panel, SectionLabel, Spinner } from "@/components/ui";
 
 function firstDayOfMonth(date: Date, offset: number): string {
@@ -75,7 +75,6 @@ export function AnalyticsPage() {
   }, [report]);
 
   const slices = breakdown === "expense" ? report?.expenseCategories ?? [] : report?.incomeCategories ?? [];
-  const sliceTotal = slices.reduce((total, slice) => total + slice.amountMinor, 0);
 
   const applyRange = (option: RangeOption) => {
     const next = option.build();
@@ -157,7 +156,7 @@ export function AnalyticsPage() {
         </Alert>
       ) : null}
 
-      {reportQuery.isLoading || !report ? (
+      {reportQuery.isError ? null : reportQuery.isLoading || !report ? (
         <div className="flex items-center justify-center py-16 text-zinc-500">
           <Spinner className="h-5 w-5" />
         </div>
@@ -290,7 +289,9 @@ export function AnalyticsPage() {
               ) : (
                 <div className="mt-4 space-y-3">
                   {slices.map((slice) => {
-                    const share = percentOf(slice.amountMinor, sliceTotal);
+                    // The bar follows the Rust-computed percentage of the full
+                    // range total so it always matches the number beside it.
+                    const share = slice.percent;
                     return (
                       <div key={slice.categoryId}>
                         <div className="flex items-center justify-between gap-3 text-[0.68rem]">
@@ -312,7 +313,7 @@ export function AnalyticsPage() {
                           <div className="h-1 flex-1 overflow-hidden rounded-full bg-white/[0.05]">
                             <div
                               className="h-full rounded-full bg-champagne-500/70"
-                              style={{ width: `${Math.max(share, 1)}%` }}
+                              style={{ width: `${Math.max(Math.min(share, 100), 1)}%` }}
                             />
                           </div>
                           <span className="w-8 text-right text-[0.58rem] text-zinc-600">{slice.percent}%</span>

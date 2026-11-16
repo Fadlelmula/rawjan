@@ -466,11 +466,14 @@ export function GoalsPage() {
                     size="sm"
                     variant="ghost"
                     className="ml-auto text-zinc-500"
+                    aria-label={`Delete goal ${goal.name}`}
                     disabled={deleteMutation.isPending}
                     onClick={() => {
                       if (
                         window.confirm(
-                          `Delete “${goal.name}”? Its ${goal.contributions.length} recorded contribution(s) will be removed. Ledger transactions are untouched.`,
+                          goal.contributions.length > 0
+                            ? `“${goal.name}” has ${goal.contributions.length} recorded contribution(s). Deleting is refused while history exists — archive the goal instead so the history is preserved.`
+                            : `Delete “${goal.name}”? This cannot be undone.`,
                         )
                       ) {
                         deleteMutation.mutate(goal.id);

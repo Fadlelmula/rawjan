@@ -22,7 +22,6 @@ import {
   amountTone,
   formatDate,
   money,
-  percentOf,
   signedAmount,
 } from "@/lib/display";
 import { useComposer } from "@/components/ComposerContext";
@@ -37,7 +36,10 @@ export function DashboardPage() {
     queryFn: () => api.listTransactions({ limit: 6, status: "effective" }),
   });
 
-  const assetShare = percentOf(netWorth.assetsMinor, netWorth.assetsMinor + netWorth.liabilitiesMinor);
+  // Percentages come from Rust (NetWorth.assetSharePercent / liabilitySharePercent);
+  // the frontend never computes them from money values.
+  const assetShare = netWorth.assetSharePercent ?? 0;
+  const liabilityShare = netWorth.liabilitySharePercent ?? 0;
   const hasAccounts = accounts.length > 0;
   const hasActivity = (recent.data?.total ?? 0) > 0;
   const primary = currencies.find((currency) => currency.code === app.primaryCurrency);
@@ -132,11 +134,13 @@ export function DashboardPage() {
             <div className="mt-4">
               <div className="flex h-1.5 overflow-hidden rounded-full bg-white/[0.05]">
                 <div className="bg-lily-500" style={{ width: `${assetShare}%` }} />
-                <div className="bg-champagne-500/70" style={{ width: `${100 - assetShare}%` }} />
+                <div className="bg-champagne-500/70" style={{ width: `${liabilityShare}%` }} />
               </div>
               <div className="mt-2 flex items-center justify-between text-[0.62rem] text-zinc-600">
                 <span>Asset share</span>
-                <span>{Math.round(assetShare)}% / {Math.round(100 - assetShare)}%</span>
+                <span>
+                  {netWorth.assetSharePercent ?? 0}% assets / {netWorth.liabilitySharePercent ?? 0}% liabilities
+                </span>
               </div>
             </div>
 
@@ -187,21 +191,21 @@ export function DashboardPage() {
           <StatCard
             label="Accounts"
             value={String(counts.accounts)}
-            hint="Active"
+            hint="Stored"
             icon={<Wallet className="h-4 w-4" />}
             to="/accounts"
           />
           <StatCard
             label="Budgets"
             value={String(counts.budgets)}
-            hint={counts.budgets === 0 ? "Not configured" : "Active"}
+            hint={counts.budgets === 0 ? "Not configured" : "Stored"}
             icon={<Target className="h-4 w-4" />}
             to="/budgets"
           />
           <StatCard
             label="Savings goals"
             value={String(counts.goals)}
-            hint={counts.goals === 0 ? "None yet" : "In progress"}
+            hint={counts.goals === 0 ? "None yet" : "Stored"}
             icon={<PiggyBank className="h-4 w-4" />}
             to="/savings"
           />
@@ -297,31 +301,27 @@ export function DashboardPage() {
             <div className="mt-3 space-y-3">
               <AllocationRow
                 label="Liquid cash"
-                minor={netWorth.cashMinor}
-                total={netWorth.assetsMinor}
+                percent={netWorth.cashPercent}
                 tone="bg-sage-500/80"
                 display={money(netWorth.cash, netWorth.currency)}
               />
               <AllocationRow
                 label="Investments"
-                minor={netWorth.investedMinor}
-                total={netWorth.assetsMinor}
+                percent={netWorth.investedPercent}
                 tone="bg-lily-500/80"
                 display={money(netWorth.invested, netWorth.currency)}
               />
               {netWorth.receivablesMinor > 0 ? (
                 <AllocationRow
                   label="Money lent"
-                  minor={netWorth.receivablesMinor}
-                  total={netWorth.assetsMinor}
+                  percent={netWorth.receivablesPercent}
                   tone="bg-champagne-300/70"
                   display={money(netWorth.receivables, netWorth.currency)}
                 />
               ) : null}
               <AllocationRow
                 label="Other assets"
-                minor={netWorth.otherAssetsMinor}
-                total={netWorth.assetsMinor}
+                percent={netWorth.otherAssetsPercent}
                 tone="bg-champagne-500/70"
                 display={money(netWorth.otherAssets, netWorth.currency)}
               />
@@ -392,18 +392,15 @@ function StatCard({
 
 function AllocationRow({
   label,
-  minor,
-  total,
+  percent,
   tone,
   display,
 }: {
   label: string;
-  minor: number;
-  total: number;
+  percent: number;
   tone: string;
   display: string;
 }) {
-  const share = percentOf(minor, total);
   return (
     <div>
       <div className="flex items-center justify-between text-[0.68rem]">
@@ -411,7 +408,10 @@ function AllocationRow({
         <span className="font-mono text-[0.66rem] text-zinc-500">{display}</span>
       </div>
       <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-white/[0.05]">
-        <div className={clsx("h-full rounded-full", tone)} style={{ width: `${share}%` }} />
+        <div
+          className={clsx("h-full rounded-full", tone)}
+          style={{ width: `${Math.min(100, percent)}%` }}
+        />
       </div>
     </div>
   );

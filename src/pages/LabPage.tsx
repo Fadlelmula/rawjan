@@ -211,9 +211,9 @@ function CompoundPanel() {
               <table className="w-full border-collapse text-left text-[0.66rem]">
                 <thead className="sticky top-0 bg-ink-900/95 text-[0.54rem] uppercase tracking-[0.12em] text-zinc-600">
                   <tr>
-                    <th className="px-3 py-2 font-medium">Year</th>
-                    <th className="px-3 py-2 text-right font-medium">Balance</th>
-                    <th className="px-3 py-2 text-right font-medium">Contributed</th>
+                    <th scope="col" className="px-3 py-2 font-medium">Year</th>
+                    <th scope="col" className="px-3 py-2 text-right font-medium">Balance</th>
+                    <th scope="col" className="px-3 py-2 text-right font-medium">Contributed</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -384,11 +384,11 @@ function LoanPanel() {
               <table className="w-full border-collapse text-left text-[0.66rem]">
                 <thead className="sticky top-0 bg-ink-900/95 text-[0.54rem] uppercase tracking-[0.12em] text-zinc-600">
                   <tr>
-                    <th className="px-3 py-2 font-medium">Month</th>
-                    <th className="px-3 py-2 text-right font-medium">Payment</th>
-                    <th className="px-3 py-2 text-right font-medium">Interest</th>
-                    <th className="px-3 py-2 text-right font-medium">Principal</th>
-                    <th className="px-3 py-2 text-right font-medium">Balance</th>
+                    <th scope="col" className="px-3 py-2 font-medium">Month</th>
+                    <th scope="col" className="px-3 py-2 text-right font-medium">Payment</th>
+                    <th scope="col" className="px-3 py-2 text-right font-medium">Interest</th>
+                    <th scope="col" className="px-3 py-2 text-right font-medium">Principal</th>
+                    <th scope="col" className="px-3 py-2 text-right font-medium">Balance</th>
                   </tr>
                 </thead>
                 <tbody>

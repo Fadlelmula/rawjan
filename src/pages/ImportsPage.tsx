@@ -17,7 +17,7 @@ import type {
   ImportResult,
 } from "@/lib/api";
 import { useBootstrap } from "@/lib/bootstrap";
-import { formatDate, titleCase } from "@/lib/display";
+import { formatDateTime, titleCase } from "@/lib/display";
 import { useToast } from "@/components/Toast";
 import {
   Alert,
@@ -410,14 +410,14 @@ export function ImportsPage() {
             <table className="w-full min-w-[52rem] border-collapse text-left text-[0.68rem]">
               <thead className="sticky top-0 z-10 bg-[#0c0b0c]">
                 <tr className="border-b border-white/[0.08] text-[0.6rem] uppercase tracking-[0.12em] text-zinc-500">
-                  <th className="px-2.5 py-2 font-medium">#</th>
+                  <th scope="col" className="px-2.5 py-2 font-medium">#</th>
                   {preview.headers.map((header) => (
                     <th key={header} className="px-2.5 py-2 font-medium">
                       {header}
                     </th>
                   ))}
-                  <th className="px-2.5 py-2 font-medium">Detected</th>
-                  <th className="px-2.5 py-2 font-medium">State</th>
+                  <th scope="col" className="px-2.5 py-2 font-medium">Detected</th>
+                  <th scope="col" className="px-2.5 py-2 font-medium">State</th>
                 </tr>
               </thead>
               <tbody>
@@ -475,7 +475,15 @@ export function ImportsPage() {
               size="sm"
               variant="primary"
               loading={commitMutation.isPending}
-              onClick={() => commitMutation.mutate()}
+              onClick={() => {
+                if (
+                  window.confirm(
+                    `Import ${preview.rowCount} rows into the ledger? Duplicates are skipped by default. Every imported row becomes a real transaction.`,
+                  )
+                ) {
+                  commitMutation.mutate();
+                }
+              }}
             >
               Import {preview.rowCount} rows
             </Button>
@@ -545,6 +553,10 @@ export function ImportsPage() {
           <div className="flex items-center justify-center py-8 text-zinc-500">
             <Spinner className="h-4 w-4" />
           </div>
+        ) : jobsQuery.isError ? (
+          <Alert tone="error" title="Could not load import history">
+            {errorMessage(jobsQuery.error)}
+          </Alert>
         ) : jobs.length === 0 ? (
           <EmptyState
             icon={<FileUp className="h-5 w-5" />}
@@ -556,14 +568,14 @@ export function ImportsPage() {
             <table className="w-full min-w-[44rem] border-collapse text-left text-[0.68rem]">
               <thead>
                 <tr className="border-b border-white/[0.08] text-[0.6rem] uppercase tracking-[0.12em] text-zinc-500">
-                  <th className="py-2 pr-3 font-medium">File</th>
-                  <th className="py-2 pr-3 font-medium">Format</th>
-                  <th className="py-2 pr-3 font-medium">Status</th>
-                  <th className="py-2 pr-3 text-right font-medium">Rows</th>
-                  <th className="py-2 pr-3 text-right font-medium">Imported</th>
-                  <th className="py-2 pr-3 text-right font-medium">Dupes</th>
-                  <th className="py-2 pr-3 text-right font-medium">Errors</th>
-                  <th className="py-2 font-medium">Started</th>
+                  <th scope="col" className="py-2 pr-3 font-medium">File</th>
+                  <th scope="col" className="py-2 pr-3 font-medium">Format</th>
+                  <th scope="col" className="py-2 pr-3 font-medium">Status</th>
+                  <th scope="col" className="py-2 pr-3 text-right font-medium">Rows</th>
+                  <th scope="col" className="py-2 pr-3 text-right font-medium">Imported</th>
+                  <th scope="col" className="py-2 pr-3 text-right font-medium">Dupes</th>
+                  <th scope="col" className="py-2 pr-3 text-right font-medium">Errors</th>
+                  <th scope="col" className="py-2 font-medium">Started</th>
                 </tr>
               </thead>
               <tbody>
@@ -587,7 +599,7 @@ export function ImportsPage() {
                       {job.errorCount}
                     </td>
                     <td className="py-2 text-zinc-500">
-                      {formatDate(job.createdAt.slice(0, 10))}
+                      {formatDateTime(job.createdAt)}
                     </td>
                   </tr>
                 ))}

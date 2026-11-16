@@ -204,6 +204,21 @@ pub fn preview(
     if !path_ref.is_file() {
         return Err(AppError::Validation("That file does not exist.".into()));
     }
+    // Only statement-shaped files are ever read: the extension must match the
+    // family of formats the importer understands.
+    let extension = path_ref
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())
+        .unwrap_or_default();
+    if !matches!(
+        extension.as_str(),
+        "csv" | "txt" | "xlsx" | "xls" | "ofx" | "qfx" | "qif"
+    ) {
+        return Err(AppError::Validation(format!(
+            "Rawjan only reads statement files (CSV, XLSX, OFX, QIF), not '.{extension}' files."
+        )));
+    }
     let metadata = std::fs::metadata(path_ref)?;
     if metadata.len() > MAX_FILE_BYTES {
         return Err(AppError::Validation(
@@ -548,6 +563,11 @@ pub fn commit(
     }
 
     let tabular = matches!(job_format.as_str(), "csv" | "xlsx");
+    // The whole commit runs inside one transaction with per-row savepoints: a
+    // crash can never leave half the statement imported while the job still
+    // reads "parsed", and one bad row never aborts the rows around it.
+    let db_tx = conn.unchecked_transaction()?;
+    let conn: &Connection = &db_tx;
     let mut imported = 0i64;
     let mut duplicates = 0i64;
     let mut errors = 0i64;
@@ -572,7 +592,10 @@ pub fn commit(
             )?;
             continue;
         }
-        match commit_row(
+        // A savepoint keeps one row's writes all-or-nothing inside the larger
+        // import transaction.
+        db_tx.execute_batch("SAVEPOINT import_row")?;
+        let outcome = commit_row(
             conn,
             tenant_id,
             user_id,
@@ -584,13 +607,14 @@ pub fn commit(
             &expense_category,
             &income_category,
             &equity_category,
-        ) {
-            Ok(Outcome::Imported(id)) => {
+        );
+        match outcome {
+            Ok(Outcome::Imported(new_id)) => {
+                update_row(conn, job_id, row_index, "imported", None, Some(&new_id))?;
+                db_tx.execute_batch("RELEASE import_row")?;
                 imported += 1;
-                update_row(conn, job_id, row_index, "imported", None, Some(&id))?;
             }
             Ok(Outcome::Duplicate) => {
-                duplicates += 1;
                 update_row(
                     conn,
                     job_id,
@@ -599,8 +623,11 @@ pub fn commit(
                     Some("Already recorded."),
                     None,
                 )?;
+                db_tx.execute_batch("RELEASE import_row")?;
+                duplicates += 1;
             }
             Err(error) => {
+                db_tx.execute_batch("ROLLBACK TO import_row; RELEASE import_row")?;
                 errors += 1;
                 let message = error.to_string();
                 if issues.len() < 25 {
@@ -648,6 +675,7 @@ pub fn commit(
             "accountId": account_id,
         })),
     )?;
+    db_tx.commit()?;
 
     Ok(ImportResult {
         job_id: job_id.to_string(),
@@ -830,7 +858,7 @@ fn commit_row(
         direction: direction.map(str::to_string),
     };
 
-    let result = tx::create_transaction(conn, tenant_id, user_id, &input)?;
+    let result = tx::create_transaction_on(conn, tenant_id, user_id, &input)?;
     Ok(Outcome::Imported(result.id))
 }
 
