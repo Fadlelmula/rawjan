@@ -1,16 +1,11 @@
 use tauri::State;
 
 use crate::error::AppResult;
-use crate::services::backups::{
-    self, BackupDto, BackupValidation, ExportResult, ExportSummary,
-};
+use crate::services::backups::{self, BackupDto, BackupValidation, ExportResult, ExportSummary};
 use crate::state::AppState;
 
 #[tauri::command]
-pub fn create_backup(
-    state: State<'_, AppState>,
-    kind: Option<String>,
-) -> AppResult<BackupDto> {
+pub fn create_backup(state: State<'_, AppState>, kind: Option<String>) -> AppResult<BackupDto> {
     let conn = state.conn();
     backups::create_backup(
         &conn,

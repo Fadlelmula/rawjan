@@ -53,7 +53,9 @@ pub fn balances(conn: &Connection, tenant_id: &str) -> AppResult<HashMap<String,
          WHERE a.tenant_id = ?1
          GROUP BY a.id",
     )?;
-    let rows = stmt.query_map([tenant_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))?;
+    let rows = stmt.query_map([tenant_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    })?;
     let mut result = HashMap::new();
     for row in rows {
         let (id, balance) = row?;
@@ -62,19 +64,112 @@ pub fn balances(conn: &Connection, tenant_id: &str) -> AppResult<HashMap<String,
     Ok(result)
 }
 
-fn latest_valuation(conn: &Connection, tenant_id: &str, account_id: &str, on_date: &str) -> AppResult<Option<(i64, String)>> {
-    Ok(conn
+/// Market value of an investment account on a date.
+///
+/// Valuations are stored per (account, instrument), so the account value is the
+/// sum of every holding's latest valuation on or before the date. When a
+/// currently held instrument has no valuation, the value would be incomplete:
+/// `None` is returned and the caller falls back to the ledger (cost basis)
+/// instead of reporting a partial market value.
+fn latest_valuation(
+    conn: &Connection,
+    tenant_id: &str,
+    account_id: &str,
+    on_date: &str,
+) -> AppResult<Option<(i64, String)>> {
+    let account_currency: String = conn
         .query_row(
-            "SELECT value_minor, currency_code FROM investment_valuations
-             WHERE tenant_id = ?1 AND account_id = ?2 AND as_of_date <= ?3
-             ORDER BY as_of_date DESC, created_at DESC LIMIT 1",
-            params![tenant_id, account_id, on_date],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            "SELECT currency_code FROM accounts WHERE id = ?1 AND tenant_id = ?2",
+            params![account_id, tenant_id],
+            |r| r.get(0),
         )
-        .optional()?)
+        .optional()?
+        .ok_or_else(|| crate::error::AppError::NotFound("Account not found.".into()))?;
+
+    // Instruments currently held in this account, net of sells.
+    let mut held: Vec<String> = Vec::new();
+    {
+        let mut stmt = conn.prepare(
+            "SELECT instrument_id
+             FROM investment_trades
+             WHERE tenant_id = ?1 AND account_id = ?2
+             GROUP BY instrument_id
+             HAVING SUM(CASE WHEN side = 'buy' THEN quantity_scaled ELSE -quantity_scaled END) > 0",
+        )?;
+        let rows = stmt.query_map(params![tenant_id, account_id], |r| r.get::<_, String>(0))?;
+        for row in rows {
+            held.push(row?);
+        }
+    }
+
+    // Valuation groups: every held instrument plus any instrument that has a
+    // valuation but no trades (recorded directly).
+    let mut groups: Vec<Option<String>> = held.iter().map(|id| Some(id.clone())).collect();
+    {
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT instrument_id FROM investment_valuations
+             WHERE tenant_id = ?1 AND account_id = ?2",
+        )?;
+        let rows = stmt.query_map(params![tenant_id, account_id], |r| {
+            r.get::<_, Option<String>>(0)
+        })?;
+        for row in rows {
+            let instrument = row?;
+            if !groups.contains(&instrument) {
+                groups.push(instrument);
+            }
+        }
+    }
+    if groups.is_empty() {
+        return Ok(None);
+    }
+
+    let mut total = 0i64;
+    for instrument in &groups {
+        let valuation: Option<(i64, String)> = conn
+            .query_row(
+                "SELECT value_minor, currency_code FROM investment_valuations
+                 WHERE tenant_id = ?1 AND account_id = ?2
+                   AND ((?3 IS NULL AND instrument_id IS NULL) OR instrument_id = ?3)
+                   AND as_of_date <= ?4
+                 ORDER BY as_of_date DESC, created_at DESC LIMIT 1",
+                params![tenant_id, account_id, instrument, on_date],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let Some((value, currency)) = valuation else {
+            // A held instrument without a valuation makes the sum incomplete.
+            // Valuation-only groups with no row in range are simply skipped.
+            if instrument.is_some() && held.contains(instrument.as_ref().unwrap()) {
+                return Ok(None);
+            }
+            continue;
+        };
+        let converted = if currency == account_currency {
+            value
+        } else {
+            match crate::services::currency::convert_to_currency(
+                conn,
+                tenant_id,
+                value,
+                &currency,
+                &account_currency,
+                on_date,
+            ) {
+                Ok((converted, _)) => converted,
+                Err(_) => return Ok(None),
+            }
+        };
+        total += converted;
+    }
+    Ok(Some((total, account_currency)))
 }
 
-pub fn list_accounts(conn: &Connection, tenant_id: &str, include_archived: bool) -> AppResult<Vec<AccountDto>> {
+pub fn list_accounts(
+    conn: &Connection,
+    tenant_id: &str,
+    include_archived: bool,
+) -> AppResult<Vec<AccountDto>> {
     let base_currency = primary_currency(conn, tenant_id)?;
     let base_exp = exponent(conn, &base_currency)?;
     let today = iso(today_local());
@@ -90,35 +185,56 @@ pub fn list_accounts(conn: &Connection, tenant_id: &str, include_archived: bool)
          ORDER BY a.is_active DESC, a.sort_order, a.name",
     )?;
     let rows = stmt
-        .query_map(params![tenant_id, if include_archived { 1 } else { 0 }], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, Option<String>>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, String>(5)?,
-                row.get::<_, i64>(6)? == 1,
-                row.get::<_, i64>(7)? == 1,
-                row.get::<_, Option<i64>>(8)?,
-                row.get::<_, Option<i64>>(9)?,
-                row.get::<_, Option<i64>>(10)?,
-                row.get::<_, Option<String>>(11)?,
-                row.get::<_, Option<String>>(12)?,
-                row.get::<_, Option<String>>(13)?,
-                row.get::<_, i64>(14)?,
-                row.get::<_, i64>(15)? == 1,
-                row.get::<_, i64>(16)?,
-                row.get::<_, Option<String>>(17)?,
-                row.get::<_, String>(18)?,
-            ))
-        })?
+        .query_map(
+            params![tenant_id, if include_archived { 1 } else { 0 }],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, i64>(6)? == 1,
+                    row.get::<_, i64>(7)? == 1,
+                    row.get::<_, Option<i64>>(8)?,
+                    row.get::<_, Option<i64>>(9)?,
+                    row.get::<_, Option<i64>>(10)?,
+                    row.get::<_, Option<String>>(11)?,
+                    row.get::<_, Option<String>>(12)?,
+                    row.get::<_, Option<String>>(13)?,
+                    row.get::<_, i64>(14)?,
+                    row.get::<_, i64>(15)? == 1,
+                    row.get::<_, i64>(16)?,
+                    row.get::<_, Option<String>>(17)?,
+                    row.get::<_, String>(18)?,
+                ))
+            },
+        )?
         .collect::<Result<Vec<_>, _>>()?;
 
     let mut result = Vec::with_capacity(rows.len());
-    for (id, name, account_type, institution, currency, symbol, is_liability, is_liquid, credit_limit,
-         statement_day, payment_due_day, broker_id, notes, color, sort_order, is_active, opening_balance,
-         opening_date, created_at) in rows
+    for (
+        id,
+        name,
+        account_type,
+        institution,
+        currency,
+        symbol,
+        is_liability,
+        is_liquid,
+        credit_limit,
+        statement_day,
+        payment_due_day,
+        broker_id,
+        notes,
+        color,
+        sort_order,
+        is_active,
+        opening_balance,
+        opening_date,
+        created_at,
+    ) in rows
     {
         let account_exp = exponent(conn, &currency)?;
         let ledger_balance = *balances.get(&id).unwrap_or(&0);
@@ -131,7 +247,14 @@ pub fn list_accounts(conn: &Connection, tenant_id: &str, include_archived: bool)
         let (balance_base_minor, rate_missing) = if currency == base_currency {
             (Some(balance_minor), false)
         } else {
-            match convert_to_currency(conn, tenant_id, balance_minor, &currency, &base_currency, &today) {
+            match convert_to_currency(
+                conn,
+                tenant_id,
+                balance_minor,
+                &currency,
+                &base_currency,
+                &today,
+            ) {
                 Ok((converted, _)) => (Some(converted), false),
                 Err(_) => (None, true),
             }
@@ -164,7 +287,11 @@ pub fn list_accounts(conn: &Connection, tenant_id: &str, include_archived: bool)
             opening_balance_minor: opening_balance,
             opening_date,
             created_at,
-            market_value_minor: if account_type == "investment" { Some(balance_minor) } else { None },
+            market_value_minor: if account_type == "investment" {
+                Some(balance_minor)
+            } else {
+                None
+            },
         });
     }
     Ok(result)
@@ -196,7 +323,17 @@ pub fn create_account(
     user_id: &str,
     input: &AccountInput,
 ) -> AppResult<String> {
-    const TYPES: &[&str] = &["cash", "bank", "debit_card", "credit_card", "savings", "wallet", "investment", "loan", "other"];
+    const TYPES: &[&str] = &[
+        "cash",
+        "bank",
+        "debit_card",
+        "credit_card",
+        "savings",
+        "wallet",
+        "investment",
+        "loan",
+        "other",
+    ];
     if !TYPES.contains(&input.account_type.as_str()) {
         return Err(AppError::Validation("Unknown account type.".into()));
     }
@@ -204,26 +341,47 @@ pub fn create_account(
         return Err(AppError::Validation("Account name is required.".into()));
     }
     let meta = crate::services::currency::currency_meta(conn, &input.currency_code)?;
-    let is_liability = input.is_liability.unwrap_or(matches!(input.account_type.as_str(), "credit_card" | "loan"));
-    let is_liquid = input.is_liquid.unwrap_or(!matches!(input.account_type.as_str(), "investment" | "loan"));
-    let opening_minor = match input.opening_balance.as_deref().filter(|v| !v.trim().is_empty()) {
+    let is_liability = input.is_liability.unwrap_or(matches!(
+        input.account_type.as_str(),
+        "credit_card" | "loan"
+    ));
+    let is_liquid = input.is_liquid.unwrap_or(!matches!(
+        input.account_type.as_str(),
+        "investment" | "loan"
+    ));
+    let opening_minor = match input
+        .opening_balance
+        .as_deref()
+        .filter(|v| !v.trim().is_empty())
+    {
         Some(value) => crate::money::parse_amount(value, meta.exponent)?,
         None => 0,
     };
-    let opening_date = input.opening_date.clone().unwrap_or_else(|| iso(today_local()));
+    let opening_date = input
+        .opening_date
+        .clone()
+        .unwrap_or_else(|| iso(today_local()));
     crate::dates::parse_date(&opening_date)?;
-    let credit_limit = match input.credit_limit.as_deref().filter(|v| !v.trim().is_empty()) {
+    let credit_limit = match input
+        .credit_limit
+        .as_deref()
+        .filter(|v| !v.trim().is_empty())
+    {
         Some(value) => Some(crate::money::parse_amount(value, meta.exponent)?),
         None => None,
     };
     if let Some(day) = input.statement_day {
         if !(1..=31).contains(&day) {
-            return Err(AppError::Validation("Statement day must be between 1 and 31.".into()));
+            return Err(AppError::Validation(
+                "Statement day must be between 1 and 31.".into(),
+            ));
         }
     }
     if let Some(day) = input.payment_due_day {
         if !(1..=31).contains(&day) {
-            return Err(AppError::Validation("Payment due day must be between 1 and 31.".into()));
+            return Err(AppError::Validation(
+                "Payment due day must be between 1 and 31.".into(),
+            ));
         }
     }
     if let Some(broker) = &input.broker_id {
@@ -291,7 +449,11 @@ pub fn create_account(
             splits: None,
             tags: None,
             external_ref: None,
-            direction: Some(if opening_minor >= 0 { "in".into() } else { "out".into() }),
+            direction: Some(if opening_minor >= 0 {
+                "in".into()
+            } else {
+                "out".into()
+            }),
         };
         // Opening negatives are represented as an outflow of the absolute amount.
         if opening_minor < 0 {
@@ -306,12 +468,21 @@ pub fn create_account(
         }
     }
 
-    crate::db::audit(conn, tenant_id, user_id, "account", &id, "create", None, Some(&serde_json::json!({
-        "name": input.name.trim(),
-        "type": input.account_type,
-        "currency": input.currency_code,
-        "openingBalanceMinor": opening_minor
-    })))?;
+    crate::db::audit(
+        conn,
+        tenant_id,
+        user_id,
+        "account",
+        &id,
+        "create",
+        None,
+        Some(&serde_json::json!({
+            "name": input.name.trim(),
+            "type": input.account_type,
+            "currency": input.currency_code,
+            "openingBalanceMinor": opening_minor
+        })),
+    )?;
     Ok(id)
 }
 
@@ -333,9 +504,12 @@ pub fn update_account(
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()?;
-    let (existing_currency, is_active) = existing.ok_or_else(|| AppError::NotFound("Account not found.".into()))?;
+    let (existing_currency, is_active) =
+        existing.ok_or_else(|| AppError::NotFound("Account not found.".into()))?;
     if is_active == 0 {
-        return Err(AppError::Conflict("Archived accounts cannot be edited. Restore the account first.".into()));
+        return Err(AppError::Conflict(
+            "Archived accounts cannot be edited. Restore the account first.".into(),
+        ));
     }
     let meta = crate::services::currency::currency_meta(conn, &input.currency_code)?;
     if input.currency_code != existing_currency {
@@ -350,12 +524,22 @@ pub fn update_account(
             ));
         }
     }
-    let credit_limit = match input.credit_limit.as_deref().filter(|v| !v.trim().is_empty()) {
+    let credit_limit = match input
+        .credit_limit
+        .as_deref()
+        .filter(|v| !v.trim().is_empty())
+    {
         Some(value) => Some(crate::money::parse_amount(value, meta.exponent)?),
         None => None,
     };
-    let is_liability = input.is_liability.unwrap_or(matches!(input.account_type.as_str(), "credit_card" | "loan"));
-    let is_liquid = input.is_liquid.unwrap_or(!matches!(input.account_type.as_str(), "investment" | "loan"));
+    let is_liability = input.is_liability.unwrap_or(matches!(
+        input.account_type.as_str(),
+        "credit_card" | "loan"
+    ));
+    let is_liquid = input.is_liquid.unwrap_or(!matches!(
+        input.account_type.as_str(),
+        "investment" | "loan"
+    ));
     conn.execute(
         "UPDATE accounts SET name = ?1, type = ?2, institution = ?3, currency_code = ?4, is_liability = ?5,
             is_liquid = ?6, credit_limit_minor = ?7, statement_day = ?8, payment_due_day = ?9, broker_id = ?10,
@@ -380,7 +564,9 @@ pub fn update_account(
             tenant_id
         ],
     )?;
-    crate::db::audit(conn, tenant_id, user_id, "account", id, "update", None, None)?;
+    crate::db::audit(
+        conn, tenant_id, user_id, "account", id, "update", None, None,
+    )?;
     Ok(())
 }
 
@@ -404,14 +590,26 @@ pub fn archive_account(
             |r| r.get(0),
         )?;
         if open_liabilities > 0 {
-            return Err(AppError::Conflict("This account has an active liability. Settle or unlink it before archiving.".into()));
+            return Err(AppError::Conflict(
+                "This account has an active liability. Settle or unlink it before archiving."
+                    .into(),
+            ));
         }
     }
     conn.execute(
         "UPDATE accounts SET is_active = ?1, archived_at = ?2, updated_at = ?2 WHERE id = ?3 AND tenant_id = ?4",
         params![if archive { 0 } else { 1 }, if archive { Some(crate::dates::now_iso()) } else { None }, id, tenant_id],
     )?;
-    crate::db::audit(conn, tenant_id, user_id, "account", id, if archive { "archive" } else { "restore" }, None, None)?;
+    crate::db::audit(
+        conn,
+        tenant_id,
+        user_id,
+        "account",
+        id,
+        if archive { "archive" } else { "restore" },
+        None,
+        None,
+    )?;
     Ok(())
 }
 
@@ -441,15 +639,17 @@ pub struct NetWorth {
 pub fn net_worth(conn: &Connection, tenant_id: &str, on_date: Option<&str>) -> AppResult<NetWorth> {
     let base_currency = primary_currency(conn, tenant_id)?;
     let base_exp = exponent(conn, &base_currency)?;
-    let date = on_date.map(str::to_string).unwrap_or_else(|| iso(today_local()));
+    let date = on_date
+        .map(str::to_string)
+        .unwrap_or_else(|| iso(today_local()));
     let balances = balances(conn, tenant_id)?;
 
     let mut stmt = conn.prepare(
         "SELECT a.id, a.type, a.currency_code, a.is_liability, a.is_liquid,
-                (a.is_liability = 1 AND EXISTS(
+                EXISTS(
                     SELECT 1 FROM liabilities l
-                    WHERE l.account_id = a.id AND l.status = 'active' AND l.type <> 'money_lent'
-                )) AS has_liability
+                    WHERE l.account_id = a.id AND l.status = 'active'
+                ) AS has_liability
          FROM accounts a WHERE a.tenant_id = ?1 AND a.is_active = 1",
     )?;
     let accounts: Vec<(String, String, String, bool, bool, bool)> = stmt
@@ -521,7 +721,14 @@ pub fn net_worth(conn: &Connection, tenant_id: &str, on_date: Option<&str>) -> A
         let converted = if currency == base_currency {
             outstanding
         } else {
-            match convert_to_currency(conn, tenant_id, outstanding, &currency, &base_currency, &date) {
+            match convert_to_currency(
+                conn,
+                tenant_id,
+                outstanding,
+                &currency,
+                &base_currency,
+                &date,
+            ) {
                 Ok((value, _)) => value,
                 Err(_) => {
                     missing.push(currency);
@@ -544,7 +751,14 @@ pub fn net_worth(conn: &Connection, tenant_id: &str, on_date: Option<&str>) -> A
         let converted = if currency == base_currency {
             outstanding
         } else {
-            match convert_to_currency(conn, tenant_id, outstanding, &currency, &base_currency, &date) {
+            match convert_to_currency(
+                conn,
+                tenant_id,
+                outstanding,
+                &currency,
+                &base_currency,
+                &date,
+            ) {
                 Ok((value, _)) => value,
                 Err(_) => {
                     missing.push(currency);
@@ -641,8 +855,13 @@ pub fn account_balance_in_base(
     if currency == base {
         return Ok(ledger);
     }
-    let (converted, _) = convert_to_currency(conn, tenant_id, ledger, &currency, &base, &iso(today_local()))?;
+    let (converted, _) = convert_to_currency(
+        conn,
+        tenant_id,
+        ledger,
+        &currency,
+        &base,
+        &iso(today_local()),
+    )?;
     Ok(converted)
 }
-
-

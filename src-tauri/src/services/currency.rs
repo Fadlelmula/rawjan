@@ -93,7 +93,13 @@ pub fn find_rate(
         .optional()?;
     if let Some((id, rate, date, source)) = direct {
         let rate = parse_rate(&rate)?;
-        return Ok(Some(RateSnapshot { id: Some(id), rate, as_of_date: date, source, inverted: false }));
+        return Ok(Some(RateSnapshot {
+            id: Some(id),
+            rate,
+            as_of_date: date,
+            source,
+            inverted: false,
+        }));
     }
 
     let inverse = conn
@@ -164,10 +170,14 @@ pub fn add_manual_rate(
     as_of_date: &str,
 ) -> AppResult<RateSnapshot> {
     if base_code == quote_code {
-        return Err(AppError::Validation("A currency cannot be rated against itself.".into()));
+        return Err(AppError::Validation(
+            "A currency cannot be rated against itself.".into(),
+        ));
     }
     if rate <= Decimal::ZERO {
-        return Err(AppError::Validation("Exchange rate must be greater than zero.".into()));
+        return Err(AppError::Validation(
+            "Exchange rate must be greater than zero.".into(),
+        ));
     }
     let id = uuid::Uuid::new_v4().to_string();
     conn.execute(
@@ -193,8 +203,8 @@ pub fn add_manual_rate(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::open_test;
     use crate::dates::parse_date;
+    use crate::db::open_test;
 
     fn seeded() -> (Connection, String) {
         let mut conn = open_test();
@@ -213,17 +223,43 @@ mod tests {
     #[test]
     fn historical_rate_is_used_and_immutable() {
         let (conn, tenant) = seeded();
-        add_manual_rate(&conn, &tenant, "USD", "QAR", parse_rate("3.64").unwrap(), "2026-01-10").unwrap();
-        add_manual_rate(&conn, &tenant, "USD", "QAR", parse_rate("3.70").unwrap(), "2026-02-10").unwrap();
+        add_manual_rate(
+            &conn,
+            &tenant,
+            "USD",
+            "QAR",
+            parse_rate("3.64").unwrap(),
+            "2026-01-10",
+        )
+        .unwrap();
+        add_manual_rate(
+            &conn,
+            &tenant,
+            "USD",
+            "QAR",
+            parse_rate("3.70").unwrap(),
+            "2026-02-10",
+        )
+        .unwrap();
 
         let january = require_rate(&conn, &tenant, "USD", "QAR", "2026-01-31").unwrap();
         assert_eq!(january.rate, parse_rate("3.64").unwrap());
         let february = require_rate(&conn, &tenant, "USD", "QAR", "2026-02-15").unwrap();
         assert_eq!(february.rate, parse_rate("3.70").unwrap());
         // Adding a newer rate never rewrites history.
-        add_manual_rate(&conn, &tenant, "USD", "QAR", parse_rate("3.80").unwrap(), "2026-03-01").unwrap();
+        add_manual_rate(
+            &conn,
+            &tenant,
+            "USD",
+            "QAR",
+            parse_rate("3.80").unwrap(),
+            "2026-03-01",
+        )
+        .unwrap();
         assert_eq!(
-            require_rate(&conn, &tenant, "USD", "QAR", "2026-01-31").unwrap().rate,
+            require_rate(&conn, &tenant, "USD", "QAR", "2026-01-31")
+                .unwrap()
+                .rate,
             parse_rate("3.64").unwrap()
         );
     }
@@ -231,7 +267,15 @@ mod tests {
     #[test]
     fn inverse_rate_works() {
         let (conn, tenant) = seeded();
-        add_manual_rate(&conn, &tenant, "USD", "QAR", parse_rate("4").unwrap(), "2026-01-10").unwrap();
+        add_manual_rate(
+            &conn,
+            &tenant,
+            "USD",
+            "QAR",
+            parse_rate("4").unwrap(),
+            "2026-01-10",
+        )
+        .unwrap();
         let inverse = require_rate(&conn, &tenant, "QAR", "USD", "2026-01-15").unwrap();
         assert_eq!(inverse.rate, parse_rate("0.25").unwrap());
         assert!(inverse.inverted);

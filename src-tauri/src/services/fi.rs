@@ -1,8 +1,6 @@
-
-
+use rusqlite::Connection;
 use rust_decimal::prelude::MathematicalOps;
 use rust_decimal::{Decimal, RoundingStrategy};
-use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
 use crate::dates;
@@ -71,11 +69,7 @@ fn round_minor(value: Decimal, exp: u32) -> AppResult<i64> {
     amount_to_minor(value, exp)
 }
 
-pub fn calculate(
-    conn: &Connection,
-    tenant_id: &str,
-    input: &FiInput,
-) -> AppResult<FiReport> {
+pub fn calculate(conn: &Connection, tenant_id: &str, input: &FiInput) -> AppResult<FiReport> {
     let currency = primary_currency(conn, tenant_id)?;
     let meta = currency_meta(conn, &currency)?;
     let exp = meta.exponent;
@@ -168,15 +162,10 @@ pub fn calculate(
     }
 
     let today = dates::today_local();
-    let fi_date = months_to_fi.map(|months| {
-        dates::iso(dates::add_months_clamped(today, months as i32))
-    });
-    let years_to_fi = months_to_fi.map(|months| {
-        format!(
-            "{:.1}",
-            Decimal::from(months) / Decimal::from(12)
-        )
-    });
+    let fi_date =
+        months_to_fi.map(|months| dates::iso(dates::add_months_clamped(today, months as i32)));
+    let years_to_fi =
+        months_to_fi.map(|months| format!("{:.1}", Decimal::from(months) / Decimal::from(12)));
 
     let years = input.years_to_retirement;
     let (coast_value, coast_minor, coast_progress) = match years {
@@ -248,11 +237,16 @@ pub fn calculate(
         );
     }
     if expected_return < inflation {
-        notes.push("Expected return is below inflation, so the real return is negative.".to_string());
+        notes.push(
+            "Expected return is below inflation, so the real return is negative.".to_string(),
+        );
     }
     if let Some(coast) = coast_value {
         if coast > fi_value {
-            notes.push("A negative real return makes the coast number larger than the FI number.".to_string());
+            notes.push(
+                "A negative real return makes the coast number larger than the FI number."
+                    .to_string(),
+            );
         }
     }
 
@@ -314,7 +308,12 @@ mod tests {
     #[test]
     fn fi_number_is_annual_expenses_divided_by_withdrawal_rate() {
         let (conn, tenant) = setup();
-        let report = calculate(&conn, &tenant, &input("48000", "4", "0", "0", "0", "0", None)).unwrap();
+        let report = calculate(
+            &conn,
+            &tenant,
+            &input("48000", "4", "0", "0", "0", "0", None),
+        )
+        .unwrap();
         assert_eq!(report.fi_number, "1,200,000.00");
         assert_eq!(report.remaining, "1,200,000.00");
         assert_eq!(report.progress_percent, 0);
@@ -323,7 +322,12 @@ mod tests {
     #[test]
     fn zero_return_months_are_exact() {
         let (conn, tenant) = setup();
-        let report = calculate(&conn, &tenant, &input("48000", "4", "0", "10000", "0", "0", None)).unwrap();
+        let report = calculate(
+            &conn,
+            &tenant,
+            &input("48000", "4", "0", "10000", "0", "0", None),
+        )
+        .unwrap();
         assert_eq!(report.months_to_fi, Some(120));
         assert_eq!(report.years_to_fi.as_deref(), Some("10.0"));
     }
@@ -347,7 +351,17 @@ mod tests {
     fn invalid_assumptions_are_rejected() {
         let (conn, tenant) = setup();
         assert!(calculate(&conn, &tenant, &input("0", "4", "0", "0", "0", "0", None)).is_err());
-        assert!(calculate(&conn, &tenant, &input("48000", "0", "0", "0", "0", "0", None)).is_err());
-        assert!(calculate(&conn, &tenant, &input("48000", "4", "0", "0", "5", "2", Some(120))).is_err());
+        assert!(calculate(
+            &conn,
+            &tenant,
+            &input("48000", "0", "0", "0", "0", "0", None)
+        )
+        .is_err());
+        assert!(calculate(
+            &conn,
+            &tenant,
+            &input("48000", "4", "0", "0", "5", "2", Some(120))
+        )
+        .is_err());
     }
 }

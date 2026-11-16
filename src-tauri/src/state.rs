@@ -28,10 +28,9 @@ impl AppState {
                 path
             }
             None => {
-                let path = app
-                    .path()
-                    .app_data_dir()
-                    .map_err(|e| AppError::Internal(format!("cannot resolve app data directory: {e}")))?;
+                let path = app.path().app_data_dir().map_err(|e| {
+                    AppError::Internal(format!("cannot resolve app data directory: {e}"))
+                })?;
                 std::fs::create_dir_all(&path)?;
                 path
             }
@@ -66,6 +65,8 @@ impl AppState {
     }
 
     pub fn conn(&self) -> MutexGuard<'_, Connection> {
-        self.conn.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.conn
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }

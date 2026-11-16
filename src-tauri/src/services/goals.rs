@@ -119,8 +119,8 @@ fn months_between(reference: NaiveDate, target: NaiveDate) -> i64 {
     if target <= reference {
         return 0;
     }
-    let mut months =
-        (target.year() - reference.year()) as i64 * 12 + target.month() as i64 - reference.month() as i64;
+    let mut months = (target.year() - reference.year()) as i64 * 12 + target.month() as i64
+        - reference.month() as i64;
     if target.day() < reference.day() {
         months -= 1;
     }
@@ -184,7 +184,11 @@ fn contribution_rows(
         .collect())
 }
 
-pub fn list_goals(conn: &Connection, tenant_id: &str, reference: Option<&str>) -> AppResult<Vec<GoalDto>> {
+pub fn list_goals(
+    conn: &Connection,
+    tenant_id: &str,
+    reference: Option<&str>,
+) -> AppResult<Vec<GoalDto>> {
     let reference_date = match reference {
         Some(value) if !value.trim().is_empty() => dates::parse_date(value)?,
         _ => today_local(),
@@ -317,7 +321,9 @@ pub fn save_goal(
     let meta = currency_meta(conn, &currency_code)?;
     let target_minor = parse_amount(&input.target_amount, meta.exponent)?;
     if target_minor <= 0 {
-        return Err(AppError::Validation("Target amount must be greater than zero.".into()));
+        return Err(AppError::Validation(
+            "Target amount must be greater than zero.".into(),
+        ));
     }
     let monthly_minor = match input.monthly_contribution.as_deref() {
         Some(value) if !value.trim().is_empty() => {
@@ -333,13 +339,20 @@ pub fn save_goal(
     };
     let priority = input.priority.unwrap_or(3);
     if !(1..=5).contains(&priority) {
-        return Err(AppError::Validation("Priority must be between 1 and 5.".into()));
+        return Err(AppError::Validation(
+            "Priority must be between 1 and 5.".into(),
+        ));
     }
     let status = input.status.as_deref().unwrap_or("active");
     validate_status(status)?;
     // A target date in the past is allowed; the UI reports it as overdue instead of rewriting it.
     let target_date = parse_optional_date(input.target_date.as_deref())?;
-    let start_date = match input.start_date.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+    let start_date = match input
+        .start_date
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
         Some(value) => {
             dates::parse_date(value)?;
             value.to_string()
@@ -607,8 +620,14 @@ mod tests {
     #[test]
     fn goal_progress_tracks_contributions() {
         let (conn, tenant, user) = setup();
-        let goal_id = save_goal(&conn, &tenant, &user, None, &goal_input("1000.00", Some("2026-05-14")))
-            .unwrap();
+        let goal_id = save_goal(
+            &conn,
+            &tenant,
+            &user,
+            None,
+            &goal_input("1000.00", Some("2026-05-14")),
+        )
+        .unwrap();
         add_contribution(
             &conn,
             &tenant,
@@ -653,8 +672,14 @@ mod tests {
     #[test]
     fn required_monthly_is_an_estimate_from_calendar_months() {
         let (conn, tenant, user) = setup();
-        let goal_id = save_goal(&conn, &tenant, &user, None, &goal_input("600.00", Some("2027-02-14")))
-            .unwrap();
+        let goal_id = save_goal(
+            &conn,
+            &tenant,
+            &user,
+            None,
+            &goal_input("600.00", Some("2027-02-14")),
+        )
+        .unwrap();
         let goals = list_goals(&conn, &tenant, Some("2026-11-14")).unwrap();
         assert_eq!(goals[0].id, goal_id);
         assert_eq!(goals[0].months_remaining, Some(3));

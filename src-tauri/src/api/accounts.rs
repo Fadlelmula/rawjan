@@ -15,7 +15,11 @@ pub fn list_accounts(
     include_archived: Option<bool>,
 ) -> AppResult<Vec<AccountDto>> {
     let conn = state.conn();
-    crate::services::accounts::list_accounts(&conn, &state.tenant_id, include_archived.unwrap_or(false))
+    crate::services::accounts::list_accounts(
+        &conn,
+        &state.tenant_id,
+        include_archived.unwrap_or(false),
+    )
 }
 
 #[tauri::command]
@@ -25,7 +29,11 @@ pub fn create_account(state: State<'_, AppState>, input: AccountInput) -> AppRes
 }
 
 #[tauri::command]
-pub fn update_account(state: State<'_, AppState>, id: String, input: AccountInput) -> AppResult<()> {
+pub fn update_account(
+    state: State<'_, AppState>,
+    id: String,
+    input: AccountInput,
+) -> AppResult<()> {
     let conn = state.conn();
     crate::services::accounts::update_account(&conn, &state.tenant_id, &state.user_id, &id, &input)
 }
@@ -33,7 +41,13 @@ pub fn update_account(state: State<'_, AppState>, id: String, input: AccountInpu
 #[tauri::command]
 pub fn archive_account(state: State<'_, AppState>, id: String, archive: bool) -> AppResult<()> {
     let conn = state.conn();
-    crate::services::accounts::archive_account(&conn, &state.tenant_id, &state.user_id, &id, archive)
+    crate::services::accounts::archive_account(
+        &conn,
+        &state.tenant_id,
+        &state.user_id,
+        &id,
+        archive,
+    )
 }
 
 #[tauri::command]
@@ -95,7 +109,9 @@ pub fn create_category(state: State<'_, AppState>, input: CategoryInput) -> AppR
         return Err(AppError::Validation("Category name is required.".into()));
     }
     if !["income", "expense", "equity"].contains(&input.kind.as_str()) {
-        return Err(AppError::Validation("Category kind must be income, expense or equity.".into()));
+        return Err(AppError::Validation(
+            "Category kind must be income, expense or equity.".into(),
+        ));
     }
     if let Some(parent_id) = input.parent_id.as_deref().filter(|v| !v.is_empty()) {
         let parent: Option<(String, Option<String>)> = conn
@@ -105,12 +121,17 @@ pub fn create_category(state: State<'_, AppState>, input: CategoryInput) -> AppR
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?;
-        let (parent_kind, grandparent) = parent.ok_or_else(|| AppError::NotFound("Parent category not found.".into()))?;
+        let (parent_kind, grandparent) =
+            parent.ok_or_else(|| AppError::NotFound("Parent category not found.".into()))?;
         if parent_kind != input.kind {
-            return Err(AppError::Validation("A subcategory must have the same kind as its parent.".into()));
+            return Err(AppError::Validation(
+                "A subcategory must have the same kind as its parent.".into(),
+            ));
         }
         if grandparent.is_some() {
-            return Err(AppError::Validation("Rawjan supports two category levels.".into()));
+            return Err(AppError::Validation(
+                "Rawjan supports two category levels.".into(),
+            ));
         }
     }
     let id = uuid::Uuid::new_v4().to_string();
@@ -136,14 +157,27 @@ pub fn create_category(state: State<'_, AppState>, input: CategoryInput) -> AppR
         }
         other => other.into(),
     })?;
-    db::audit(&conn, &state.tenant_id, &state.user_id, "category", &id, "create", None, Some(&json!({
-        "name": input.name.trim(), "kind": input.kind, "parentId": input.parent_id
-    })))?;
+    db::audit(
+        &conn,
+        &state.tenant_id,
+        &state.user_id,
+        "category",
+        &id,
+        "create",
+        None,
+        Some(&json!({
+            "name": input.name.trim(), "kind": input.kind, "parentId": input.parent_id
+        })),
+    )?;
     Ok(id)
 }
 
 #[tauri::command]
-pub fn update_category(state: State<'_, AppState>, id: String, input: CategoryInput) -> AppResult<()> {
+pub fn update_category(
+    state: State<'_, AppState>,
+    id: String,
+    input: CategoryInput,
+) -> AppResult<()> {
     let conn = state.conn();
     let (old_kind, usage): (String, i64) = conn
         .query_row(
@@ -158,7 +192,9 @@ pub fn update_category(state: State<'_, AppState>, id: String, input: CategoryIn
         .optional()?
         .ok_or_else(|| AppError::NotFound("Category not found.".into()))?;
     if usage > 0 && old_kind != input.kind {
-        return Err(AppError::Conflict("The kind of a category in use cannot be changed.".into()));
+        return Err(AppError::Conflict(
+            "The kind of a category in use cannot be changed.".into(),
+        ));
     }
     conn.execute(
         "UPDATE categories SET name = ?1, kind = ?2, parent_id = ?3, icon = ?4, color = ?5, sort_order = ?6
@@ -174,7 +210,16 @@ pub fn update_category(state: State<'_, AppState>, id: String, input: CategoryIn
             state.tenant_id
         ],
     )?;
-    db::audit(&conn, &state.tenant_id, &state.user_id, "category", &id, "update", None, None)?;
+    db::audit(
+        &conn,
+        &state.tenant_id,
+        &state.user_id,
+        "category",
+        &id,
+        "update",
+        None,
+        None,
+    )?;
     Ok(())
 }
 
@@ -190,14 +235,25 @@ pub fn archive_category(state: State<'_, AppState>, id: String, archive: bool) -
             )
             .optional()?;
         if parent_archived == Some(1) {
-            return Err(AppError::Conflict("Restore the parent category first.".into()));
+            return Err(AppError::Conflict(
+                "Restore the parent category first.".into(),
+            ));
         }
     }
     conn.execute(
         "UPDATE categories SET is_archived = ?1 WHERE id = ?2 AND tenant_id = ?3",
         params![if archive { 1 } else { 0 }, id, state.tenant_id],
     )?;
-    db::audit(&conn, &state.tenant_id, &state.user_id, "category", &id, if archive { "archive" } else { "restore" }, None, None)?;
+    db::audit(
+        &conn,
+        &state.tenant_id,
+        &state.user_id,
+        "category",
+        &id,
+        if archive { "archive" } else { "restore" },
+        None,
+        None,
+    )?;
     Ok(())
 }
 
@@ -311,28 +367,57 @@ pub fn save_income_source(
 ) -> AppResult<String> {
     let conn = state.conn();
     if input.name.trim().is_empty() {
-        return Err(AppError::Validation("Income source name is required.".into()));
+        return Err(AppError::Validation(
+            "Income source name is required.".into(),
+        ));
     }
-    if !["salary", "bonus", "business", "freelance", "dividend", "rental", "interest", "gift", "other"]
-        .contains(&input.source_type.as_str())
+    if ![
+        "salary",
+        "bonus",
+        "business",
+        "freelance",
+        "dividend",
+        "rental",
+        "interest",
+        "gift",
+        "other",
+    ]
+    .contains(&input.source_type.as_str())
     {
         return Err(AppError::Validation("Unknown income source type.".into()));
     }
-    if !["monthly", "semimonthly", "biweekly", "weekly", "irregular", "one_time"].contains(&input.schedule.as_str()) {
+    if ![
+        "monthly",
+        "semimonthly",
+        "biweekly",
+        "weekly",
+        "irregular",
+        "one_time",
+    ]
+    .contains(&input.schedule.as_str())
+    {
         return Err(AppError::Validation("Unknown schedule.".into()));
     }
     if let Some(day) = input.pay_day {
         if !(1..=31).contains(&day) {
-            return Err(AppError::Validation("Pay day must be between 1 and 31.".into()));
+            return Err(AppError::Validation(
+                "Pay day must be between 1 and 31.".into(),
+            ));
         }
     }
     let exp = crate::services::currency::exponent(&conn, &input.currency_code)?;
-    let amount_minor = match input.expected_amount.as_deref().filter(|v| !v.trim().is_empty()) {
+    let amount_minor = match input
+        .expected_amount
+        .as_deref()
+        .filter(|v| !v.trim().is_empty())
+    {
         Some(value) => crate::money::parse_amount(value, exp)?,
         None => 0,
     };
     if amount_minor < 0 {
-        return Err(AppError::Validation("Expected amount cannot be negative.".into()));
+        return Err(AppError::Validation(
+            "Expected amount cannot be negative.".into(),
+        ));
     }
     if let Some(account_id) = input.account_id.as_deref().filter(|v| !v.is_empty()) {
         crate::services::tx::load_account(&conn, &state.tenant_id, account_id)?;
@@ -388,9 +473,18 @@ pub fn save_income_source(
             source_id
         }
     };
-    db::audit(&conn, &state.tenant_id, &state.user_id, "income_source", &source_id, "save", None, Some(&json!({
-        "name": input.name.trim(), "type": input.source_type, "expectedAmountMinor": amount_minor
-    })))?;
+    db::audit(
+        &conn,
+        &state.tenant_id,
+        &state.user_id,
+        "income_source",
+        &source_id,
+        "save",
+        None,
+        Some(&json!({
+            "name": input.name.trim(), "type": input.source_type, "expectedAmountMinor": amount_minor
+        })),
+    )?;
     Ok(source_id)
 }
 
@@ -442,7 +536,15 @@ pub fn save_broker(
             conn.execute(
                 "INSERT INTO brokers (id, tenant_id, name, kind, website, notes, created_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![broker_id, state.tenant_id, name.trim(), kind.unwrap_or_else(|| "broker".into()), website, notes, now],
+                params![
+                    broker_id,
+                    state.tenant_id,
+                    name.trim(),
+                    kind.unwrap_or_else(|| "broker".into()),
+                    website,
+                    notes,
+                    now
+                ],
             )?;
             broker_id
         }

@@ -25,7 +25,8 @@ impl MoneyView {
 }
 
 pub fn pow10(exponent: u32) -> AppResult<i64> {
-    10i64.checked_pow(exponent)
+    10i64
+        .checked_pow(exponent)
         .ok_or_else(|| AppError::Validation("Currency exponent is not supported.".into()))
 }
 
@@ -132,7 +133,9 @@ pub fn parse_rate(input: &str) -> AppResult<Decimal> {
     let rate = parse_decimal(input)
         .map_err(|_| AppError::Validation(format!("'{input}' is not a valid exchange rate.")))?;
     if rate <= Decimal::ZERO {
-        return Err(AppError::Validation("Exchange rate must be greater than zero.".into()));
+        return Err(AppError::Validation(
+            "Exchange rate must be greater than zero.".into(),
+        ));
     }
     Ok(rate)
 }
@@ -162,6 +165,23 @@ pub fn convert_minor(
         .ok_or_else(|| AppError::Validation("Converted amount is too large.".into()))
 }
 
+/// Sum minor-unit amounts, reporting overflow instead of wrapping.
+pub fn checked_sum(values: impl Iterator<Item = i64>) -> AppResult<i64> {
+    let mut total = 0i64;
+    for value in values {
+        total = total
+            .checked_add(value)
+            .ok_or_else(|| AppError::Validation("The total exceeds the supported range.".into()))?;
+    }
+    Ok(total)
+}
+
+/// Difference between two minor-unit amounts, reporting overflow.
+pub fn checked_diff(a: i64, b: i64) -> AppResult<i64> {
+    a.checked_sub(b)
+        .ok_or_else(|| AppError::Validation("The total exceeds the supported range.".into()))
+}
+
 pub fn format_amount(minor: i64, exponent: u32) -> String {
     let exponent = exponent.min(4);
     let negative = minor < 0;
@@ -173,7 +193,7 @@ pub fn format_amount(minor: i64, exponent: u32) -> String {
     let whole_str = whole.to_string();
     let mut grouped = String::with_capacity(whole_str.len() + whole_str.len() / 3);
     for (i, ch) in whole_str.chars().enumerate() {
-        if i > 0 && (whole_str.len() - i) % 3 == 0 {
+        if i > 0 && (whole_str.len() - i).is_multiple_of(3) {
             grouped.push(',');
         }
         grouped.push(ch);
@@ -246,7 +266,10 @@ mod tests {
         assert_eq!(parse_amount("-.5", 2).unwrap(), -50);
         assert_eq!(parse_amount("+12.34", 2).unwrap(), 1234);
         assert_eq!(parse_amount("1,000", 0).unwrap(), 1000);
-        assert_eq!(parse_rate("3.6400").unwrap(), Decimal::from_str("3.64").unwrap());
+        assert_eq!(
+            parse_rate("3.6400").unwrap(),
+            Decimal::from_str("3.64").unwrap()
+        );
     }
 
     #[test]
@@ -271,7 +294,10 @@ mod tests {
         assert!(convert_minor(i64::MAX, 2, 2, huge).is_err());
         assert!(convert_minor(i64::MIN, 2, 2, huge).is_err());
         // A value that still fits keeps working exactly.
-        assert_eq!(convert_minor(i64::MAX, 2, 2, Decimal::ONE).unwrap(), i64::MAX);
+        assert_eq!(
+            convert_minor(i64::MAX, 2, 2, Decimal::ONE).unwrap(),
+            i64::MAX
+        );
     }
 
     #[test]
@@ -279,5 +305,42 @@ mod tests {
         let tenth = Decimal::from_str("0.1").unwrap();
         let twentieth = Decimal::from_str("0.2").unwrap();
         assert_eq!((tenth + twentieth).to_string(), "0.3");
+    }
+
+    #[test]
+    fn checked_totals_report_overflow_instead_of_wrapping() {
+        assert_eq!(checked_sum([i64::MAX, 0].into_iter()).unwrap(), i64::MAX);
+        assert!(checked_sum([i64::MAX, 1].into_iter()).is_err());
+        assert_eq!(checked_diff(5, 3).unwrap(), 2);
+        assert!(checked_diff(i64::MIN, 1).is_err());
+    }
+
+    #[test]
+    fn formatting_and_parsing_round_trip_across_the_supported_range() {
+        // Deterministic property sweep: every formatted amount parses back to
+        // the same minor units for all supported exponents and signs.
+        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = move || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            state
+        };
+        for exponent in 0..=4u32 {
+            for index in 0..500u64 {
+                let magnitude = (next() >> 11) as i64 % 100_000_000_000;
+                let minor = if index % 2 == 0 {
+                    magnitude
+                } else {
+                    -magnitude
+                };
+                let formatted = format_amount(minor, exponent);
+                let parsed = parse_amount(&formatted, exponent).unwrap();
+                assert_eq!(
+                    parsed, minor,
+                    "round trip failed for {formatted} (exp {exponent})"
+                );
+            }
+        }
     }
 }

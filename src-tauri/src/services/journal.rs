@@ -64,7 +64,9 @@ pub fn save_entry(
 ) -> AppResult<String> {
     let title = input.title.trim();
     if title.is_empty() {
-        return Err(AppError::Validation("Give the journal entry a title.".into()));
+        return Err(AppError::Validation(
+            "Give the journal entry a title.".into(),
+        ));
     }
     if title.len() > 200 {
         return Err(AppError::Validation(
@@ -144,12 +146,7 @@ pub fn save_entry(
     }
 }
 
-pub fn delete_entry(
-    conn: &Connection,
-    tenant_id: &str,
-    user_id: &str,
-    id: &str,
-) -> AppResult<()> {
+pub fn delete_entry(conn: &Connection, tenant_id: &str, user_id: &str, id: &str) -> AppResult<()> {
     let changed = conn.execute(
         "DELETE FROM journal_entries WHERE id = ?1 AND tenant_id = ?2",
         params![id, tenant_id],
@@ -192,10 +189,22 @@ mod tests {
     #[test]
     fn journal_entries_round_trip_and_search() {
         let (conn, tenant, user) = setup();
-        let id = save_entry(&conn, &tenant, &user, None, &input("Rent decision", "Renegotiated the lease.", "2026-11-02"))
-            .unwrap();
-        save_entry(&conn, &tenant, &user, None, &input("Bonus plan", "Save half of the bonus.", "2026-11-10"))
-            .unwrap();
+        let id = save_entry(
+            &conn,
+            &tenant,
+            &user,
+            None,
+            &input("Rent decision", "Renegotiated the lease.", "2026-11-02"),
+        )
+        .unwrap();
+        save_entry(
+            &conn,
+            &tenant,
+            &user,
+            None,
+            &input("Bonus plan", "Save half of the bonus.", "2026-11-10"),
+        )
+        .unwrap();
 
         let all = list_entries(&conn, &tenant, None, None).unwrap();
         assert_eq!(all.len(), 2);
@@ -209,7 +218,14 @@ mod tests {
     #[test]
     fn journal_update_changes_fields_and_delete_removes() {
         let (conn, tenant, user) = setup();
-        let id = save_entry(&conn, &tenant, &user, None, &input("Draft", "First thought.", "2026-11-01")).unwrap();
+        let id = save_entry(
+            &conn,
+            &tenant,
+            &user,
+            None,
+            &input("Draft", "First thought.", "2026-11-01"),
+        )
+        .unwrap();
         save_entry(
             &conn,
             &tenant,
@@ -232,7 +248,21 @@ mod tests {
     #[test]
     fn journal_requires_a_title_and_valid_date() {
         let (conn, tenant, user) = setup();
-        assert!(save_entry(&conn, &tenant, &user, None, &input("  ", "body", "2026-11-01")).is_err());
-        assert!(save_entry(&conn, &tenant, &user, None, &input("Title", "body", "01/11/2026")).is_err());
+        assert!(save_entry(
+            &conn,
+            &tenant,
+            &user,
+            None,
+            &input("  ", "body", "2026-11-01")
+        )
+        .is_err());
+        assert!(save_entry(
+            &conn,
+            &tenant,
+            &user,
+            None,
+            &input("Title", "body", "01/11/2026")
+        )
+        .is_err());
     }
 }

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::dates::{self, iso, today_local};
 use crate::error::{AppError, AppResult};
-use crate::money::{format_amount, parse_amount};
+use crate::money::{checked_diff, checked_sum, format_amount, parse_amount};
 use crate::services::currency::{convert_to_currency, currency_meta, exponent, primary_currency};
 
 const PERIOD_TYPES: &[&str] = &["calendar_month", "cycle_month", "weekly", "daily"];
@@ -22,12 +22,16 @@ pub struct BudgetAllocationDto {
     pub category_color: Option<String>,
     pub amount_minor: i64,
     pub amount: String,
-    pub spent_minor: i64,
-    pub spent: String,
-    pub remaining_minor: i64,
-    pub remaining: String,
-    pub percent_used: i64,
-    pub over_budget: bool,
+    /// Spend converted into the budget currency. `None` when no exchange rate
+    /// exists: an unconverted number is never substituted for a converted one.
+    pub spent_minor: Option<i64>,
+    pub spent: Option<String>,
+    pub remaining_minor: Option<i64>,
+    pub remaining: Option<String>,
+    pub percent_used: Option<i64>,
+    pub over_budget: Option<bool>,
+    /// True when spend could not be converted into the budget currency.
+    pub fx_unavailable: bool,
     pub notes: Option<String>,
     pub sort_order: i64,
 }
@@ -48,11 +52,14 @@ pub struct BudgetDto {
     pub start_date: String,
     pub allocated_minor: i64,
     pub allocated: String,
+    /// Spent total over allocations whose spend could be converted. When
+    /// `fx_unavailable` is true this is a partial total, never a substituted one.
     pub spent_minor: i64,
     pub spent: String,
     pub remaining_minor: i64,
     pub remaining: String,
     pub percent_used: i64,
+    pub fx_unavailable: bool,
     pub period_start: String,
     pub period_end: String,
     pub allocations: Vec<BudgetAllocationDto>,
@@ -165,7 +172,19 @@ pub fn list_budgets(
          WHERE b.tenant_id = ?1
          ORDER BY b.is_active DESC, b.name",
     )?;
-    let budgets: Vec<(String, String, String, String, i64, String, String, String, String, bool, String)> = stmt
+    let budgets: Vec<(
+        String,
+        String,
+        String,
+        String,
+        i64,
+        String,
+        String,
+        String,
+        String,
+        bool,
+        String,
+    )> = stmt
         .query_map([tenant_id], |row| {
             Ok((
                 row.get(0)?,
@@ -210,7 +229,15 @@ pub fn list_budgets(
              WHERE ba.budget_id = ?1
              ORDER BY ba.sort_order, c.name",
         )?;
-        let allocations_raw: Vec<(String, String, String, Option<String>, i64, Option<String>, i64)> = alloc_stmt
+        let allocations_raw: Vec<(
+            String,
+            String,
+            String,
+            Option<String>,
+            i64,
+            Option<String>,
+            i64,
+        )> = alloc_stmt
             .query_map([&id], |row| {
                 Ok((
                     row.get(0)?,
@@ -227,14 +254,24 @@ pub fn list_budgets(
         let mut allocations = Vec::with_capacity(allocations_raw.len());
         let mut allocated_total = 0i64;
         let mut spent_total = 0i64;
-        for (alloc_id, category_id, category_name, category_color, amount_minor, notes, sort_order) in
-            allocations_raw
+        let mut fx_unavailable = false;
+        for (
+            alloc_id,
+            category_id,
+            category_name,
+            category_color,
+            amount_minor,
+            notes,
+            sort_order,
+        ) in allocations_raw
         {
             let spent_base = *spend_base.get(&category_id).unwrap_or(&0);
             // Allocation amounts live in the budget currency; spend is computed in the primary
-            // currency. Convert only when they differ so the comparison stays traceable.
-            let spent_minor = if currency == base_currency {
-                spent_base
+            // currency. Convert only when they differ so the comparison stays traceable. When no
+            // rate exists the spend is marked unavailable instead of pretending an unconverted
+            // number belongs in the budget currency.
+            let converted = if currency == base_currency {
+                Some(spent_base)
             } else {
                 match convert_to_currency(
                     conn,
@@ -244,13 +281,20 @@ pub fn list_budgets(
                     &currency,
                     &end_s,
                 ) {
-                    Ok((value, _)) => value,
-                    Err(_) => spent_base,
+                    Ok((value, _)) => Some(value),
+                    Err(_) => {
+                        fx_unavailable = true;
+                        None
+                    }
                 }
             };
-            let remaining = amount_minor - spent_minor;
-            allocated_total += amount_minor;
-            spent_total += spent_minor;
+            let remaining = converted
+                .map(|spent_minor| checked_diff(amount_minor, spent_minor))
+                .transpose()?;
+            allocated_total = checked_sum([allocated_total, amount_minor].into_iter())?;
+            if let Some(spent_minor) = converted {
+                spent_total = checked_sum([spent_total, spent_minor].into_iter())?;
+            }
             allocations.push(BudgetAllocationDto {
                 id: alloc_id,
                 category_id,
@@ -258,18 +302,19 @@ pub fn list_budgets(
                 category_color,
                 amount_minor,
                 amount: format_amount(amount_minor, currency_exp),
-                spent_minor,
-                spent: format_amount(spent_minor, currency_exp),
+                spent_minor: converted,
+                spent: converted.map(|value| format_amount(value, currency_exp)),
                 remaining_minor: remaining,
-                remaining: format_amount(remaining, currency_exp),
-                percent_used: percent_used(spent_minor, amount_minor),
-                over_budget: remaining < 0,
+                remaining: remaining.map(|value| format_amount(value, currency_exp)),
+                percent_used: converted.map(|spent_minor| percent_used(spent_minor, amount_minor)),
+                over_budget: remaining.map(|value| value < 0),
+                fx_unavailable: converted.is_none(),
                 notes,
                 sort_order,
             });
         }
 
-        let remaining_total = allocated_total - spent_total;
+        let remaining_total = checked_diff(allocated_total, spent_total)?;
         result.push(BudgetDto {
             id,
             name,
@@ -289,6 +334,7 @@ pub fn list_budgets(
             remaining_minor: remaining_total,
             remaining: format_amount(remaining_total, currency_exp),
             percent_used: percent_used(spent_total, allocated_total),
+            fx_unavailable,
             period_start: start_s,
             period_end: end_s,
             allocations,
@@ -340,7 +386,9 @@ pub fn save_budget(
     }
     let cycle_start_day = input.cycle_start_day.unwrap_or(28);
     if !(1..=31).contains(&cycle_start_day) {
-        return Err(AppError::Validation("Cycle start day must be between 1 and 31.".into()));
+        return Err(AppError::Validation(
+            "Cycle start day must be between 1 and 31.".into(),
+        ));
     }
     let currency_code = input
         .currency_code
@@ -406,7 +454,10 @@ pub fn save_budget(
                     tenant_id
                 ],
             )?;
-            db_tx.execute("DELETE FROM budget_allocations WHERE budget_id = ?1", [existing])?;
+            db_tx.execute(
+                "DELETE FROM budget_allocations WHERE budget_id = ?1",
+                [existing],
+            )?;
             existing.to_string()
         }
         None => {
@@ -437,7 +488,9 @@ pub fn save_budget(
     for (index, allocation) in input.allocations.iter().enumerate() {
         let amount_minor = parse_amount(&allocation.amount, meta.exponent)?;
         if amount_minor < 0 {
-            return Err(AppError::Validation("Budget amounts cannot be negative.".into()));
+            return Err(AppError::Validation(
+                "Budget amounts cannot be negative.".into(),
+            ));
         }
         db_tx.execute(
             "INSERT INTO budget_allocations (id, tenant_id, budget_id, category_id, amount_minor, notes, sort_order)
@@ -500,13 +553,11 @@ pub fn set_budget_active(
     Ok(())
 }
 
-pub fn delete_budget(
-    conn: &Connection,
-    tenant_id: &str,
-    user_id: &str,
-    id: &str,
-) -> AppResult<()> {
-    let changed = conn.execute("DELETE FROM budgets WHERE id = ?1 AND tenant_id = ?2", params![id, tenant_id])?;
+pub fn delete_budget(conn: &Connection, tenant_id: &str, user_id: &str, id: &str) -> AppResult<()> {
+    let changed = conn.execute(
+        "DELETE FROM budgets WHERE id = ?1 AND tenant_id = ?2",
+        params![id, tenant_id],
+    )?;
     if changed == 0 {
         return Err(AppError::NotFound("Budget not found.".into()));
     }
@@ -519,6 +570,8 @@ mod tests {
     use super::*;
     use crate::db::{self, open_test};
     use crate::services::tx::{create_transaction, TxInput};
+    use rust_decimal::Decimal;
+    use std::str::FromStr;
 
     fn setup() -> (Connection, String, String, String, String) {
         let mut conn = open_test();
@@ -637,6 +690,219 @@ mod tests {
         assert_eq!(budget.remaining_minor, 5000);
         assert_eq!(budget.percent_used, 83);
         assert_eq!(budget.allocations.len(), 1);
-        assert_eq!(budget.allocations[0].spent_minor, 25000);
+        assert_eq!(budget.allocations[0].spent_minor, Some(25000));
+    }
+
+    fn usd_budget(
+        conn: &Connection,
+        tenant: &str,
+        user: &str,
+        category: &str,
+        amount: &str,
+    ) -> String {
+        save_budget(
+            conn,
+            tenant,
+            user,
+            None,
+            &BudgetInput {
+                name: "USD essentials".into(),
+                method: Some("custom".into()),
+                period_type: Some("calendar_month".into()),
+                cycle_start_day: None,
+                rollover_policy: Some("none".into()),
+                currency_code: Some("USD".into()),
+                alert_thresholds: None,
+                start_date: Some("2026-11-01".into()),
+                allocations: vec![BudgetAllocationInput {
+                    category_id: category.to_string(),
+                    amount: amount.into(),
+                    notes: None,
+                }],
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn budget_fx_conversion_failure_is_surfaced_not_substituted() {
+        let (conn, tenant, user, account, category) = setup();
+        create_transaction(
+            &conn,
+            &tenant,
+            &user,
+            &expense(&account, &category, "250.00", "posted", "2026-11-14"),
+        )
+        .unwrap();
+        usd_budget(&conn, &tenant, &user, &category, "300.00");
+
+        let budgets = list_budgets(&conn, &tenant, Some("2026-11-14")).unwrap();
+        let budget = &budgets[0];
+        assert!(budget.fx_unavailable);
+        // The QAR spend is never substituted into a USD budget unconverted.
+        assert_eq!(budget.spent_minor, 0);
+        let allocation = &budget.allocations[0];
+        assert!(allocation.fx_unavailable);
+        assert_eq!(allocation.spent_minor, None);
+        assert_eq!(allocation.spent, None);
+        assert_eq!(allocation.remaining_minor, None);
+        assert_eq!(allocation.percent_used, None);
+        assert_eq!(allocation.over_budget, None);
+    }
+
+    #[test]
+    fn budget_fx_conversion_uses_the_recorded_rate() {
+        let (conn, tenant, user, account, category) = setup();
+        create_transaction(
+            &conn,
+            &tenant,
+            &user,
+            &expense(&account, &category, "100.00", "posted", "2026-11-14"),
+        )
+        .unwrap();
+        crate::services::currency::add_manual_rate(
+            &conn,
+            &tenant,
+            "QAR",
+            "USD",
+            Decimal::from_str("0.274725").unwrap(),
+            "2026-11-10",
+        )
+        .unwrap();
+        usd_budget(&conn, &tenant, &user, &category, "300.00");
+
+        let budgets = list_budgets(&conn, &tenant, Some("2026-11-14")).unwrap();
+        let budget = &budgets[0];
+        assert!(!budget.fx_unavailable);
+        // 100.00 QAR at 0.274725 = 27.4725 USD -> 2,747 minor units.
+        assert_eq!(budget.spent_minor, 2_747);
+        assert_eq!(budget.remaining_minor, 30_000 - 2_747);
+        let allocation = &budget.allocations[0];
+        assert_eq!(allocation.spent_minor, Some(2_747));
+        assert_eq!(allocation.remaining_minor, Some(27_253));
+        assert_eq!(allocation.over_budget, Some(false));
+    }
+
+    #[test]
+    fn zero_allocations_never_divide_by_zero() {
+        let (conn, tenant, user, account, category) = setup();
+        create_transaction(
+            &conn,
+            &tenant,
+            &user,
+            &expense(&account, &category, "50.00", "posted", "2026-11-14"),
+        )
+        .unwrap();
+        let budget_id = usd_budget(&conn, &tenant, &user, &category, "0.00");
+        // Same currency budget for a clean denominator check.
+        save_budget(
+            &conn,
+            &tenant,
+            &user,
+            Some(&budget_id),
+            &BudgetInput {
+                name: "Zero target".into(),
+                method: Some("custom".into()),
+                period_type: Some("calendar_month".into()),
+                cycle_start_day: None,
+                rollover_policy: Some("none".into()),
+                currency_code: Some("QAR".into()),
+                alert_thresholds: None,
+                start_date: Some("2026-11-01".into()),
+                allocations: vec![BudgetAllocationInput {
+                    category_id: category.clone(),
+                    amount: "0.00".into(),
+                    notes: None,
+                }],
+            },
+        )
+        .unwrap();
+
+        let budgets = list_budgets(&conn, &tenant, Some("2026-11-14")).unwrap();
+        let budget = &budgets[0];
+        assert_eq!(budget.percent_used, 0);
+        assert_eq!(budget.allocations[0].percent_used, Some(0));
+        assert_eq!(budget.allocations[0].remaining_minor, Some(-5_000));
+        assert_eq!(budget.allocations[0].over_budget, Some(true));
+    }
+
+    #[test]
+    fn extreme_allocation_totals_report_overflow_instead_of_wrapping() {
+        let (conn, tenant, user, _account, category) = setup();
+        let other: String = conn
+            .query_row(
+                "SELECT id FROM categories WHERE tenant_id = ?1 AND name = 'Dining & Cafés'",
+                [&tenant],
+                |r| r.get(0),
+            )
+            .unwrap();
+        save_budget(
+            &conn,
+            &tenant,
+            &user,
+            None,
+            &BudgetInput {
+                name: "Extreme".into(),
+                method: Some("custom".into()),
+                period_type: Some("calendar_month".into()),
+                cycle_start_day: None,
+                rollover_policy: Some("none".into()),
+                currency_code: Some("QAR".into()),
+                alert_thresholds: None,
+                start_date: Some("2026-11-01".into()),
+                allocations: vec![
+                    BudgetAllocationInput {
+                        category_id: category.clone(),
+                        amount: "92233720368547758.07".into(),
+                        notes: None,
+                    },
+                    BudgetAllocationInput {
+                        category_id: other,
+                        amount: "92233720368547758.07".into(),
+                        notes: None,
+                    },
+                ],
+            },
+        )
+        .unwrap();
+
+        // Two near-i64::MAX allocations overflow the total. The report must
+        // error instead of wrapping around to a small, wrong number.
+        let result = list_budgets(&conn, &tenant, Some("2026-11-14"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn split_expenses_and_refunds_net_out_per_category() {
+        let (conn, tenant, user, account, category) = setup();
+        let other: String = conn
+            .query_row(
+                "SELECT id FROM categories WHERE tenant_id = ?1 AND name = 'Dining & Cafés'",
+                [&tenant],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let mut split_expense = expense(&account, &category, "120.00", "posted", "2026-11-10");
+        split_expense.category_id = None;
+        split_expense.splits = Some(vec![
+            crate::services::tx::SplitInput {
+                category_id: category.clone(),
+                amount: "70.00".into(),
+                note: None,
+            },
+            crate::services::tx::SplitInput {
+                category_id: other.clone(),
+                amount: "50.00".into(),
+                note: None,
+            },
+        ]);
+        create_transaction(&conn, &tenant, &user, &split_expense).unwrap();
+        let mut refund = expense(&account, &category, "20.00", "posted", "2026-11-12");
+        refund.kind = "refund".into();
+        create_transaction(&conn, &tenant, &user, &refund).unwrap();
+
+        let spend = spend_by_category(&conn, &tenant, "2026-11-01", "2026-11-30").unwrap();
+        assert_eq!(spend.get(&category).copied(), Some(5_000));
+        assert_eq!(spend.get(&other).copied(), Some(5_000));
     }
 }

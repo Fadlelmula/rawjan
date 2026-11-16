@@ -158,7 +158,9 @@ pub fn capture_snapshot(
             |row| row.get::<_, String>(0),
         )
         .optional()?
-        .ok_or_else(|| AppError::Internal("Snapshot was saved but could not be read back.".into()))?;
+        .ok_or_else(|| {
+            AppError::Internal("Snapshot was saved but could not be read back.".into())
+        })?;
 
     let snapshots = list_snapshots(conn, tenant_id, Some(1))?;
     snapshots
@@ -261,5 +263,202 @@ mod tests {
         assert_eq!(worth.liabilities_minor, 0);
         assert_eq!(worth.net_minor, 100_000);
         assert_eq!(worth.other_assets_minor, 0);
+    }
+
+    fn insert_instrument(conn: &Connection, tenant: &str, symbol: &str) -> String {
+        let id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO instruments (id, tenant_id, symbol, name, asset_class, currency_code, exchange, isin, notes, created_at)
+             VALUES (?1, ?2, ?3, ?4, 'stock', 'QAR', NULL, NULL, NULL, ?5)",
+            params![id, tenant, symbol, symbol, crate::dates::now_iso()],
+        )
+        .unwrap();
+        id
+    }
+
+    fn insert_trade(conn: &Connection, tenant: &str, user: &str, account: &str, instrument: &str) {
+        conn.execute(
+            "INSERT INTO investment_trades (id, tenant_id, user_id, account_id, instrument_id, side, trade_date,
+                quantity_scaled, price_scaled, price_scale, fee_minor, currency_code, fx_rate_id, transaction_id, notes, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'buy', '2026-11-01', 100000000, 1000000, 8, 0, 'QAR', NULL, NULL, NULL, ?6)",
+            params![uuid::Uuid::new_v4().to_string(), tenant, user, account, instrument, crate::dates::now_iso()],
+        )
+        .unwrap();
+    }
+
+    fn insert_valuation(
+        conn: &Connection,
+        tenant: &str,
+        account: &str,
+        instrument: Option<&str>,
+        value_minor: i64,
+        date: &str,
+    ) {
+        conn.execute(
+            "INSERT INTO investment_valuations (id, tenant_id, account_id, instrument_id, as_of_date,
+                quantity_scaled, price_scaled, price_scale, value_minor, currency_code, source, source_ref, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 0, 0, 8, ?6, 'QAR', 'manual', NULL, ?7)",
+            params![
+                uuid::Uuid::new_v4().to_string(),
+                tenant,
+                account,
+                instrument,
+                date,
+                value_minor,
+                crate::dates::now_iso()
+            ],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn an_investment_account_sums_every_holding_valuation() {
+        let (conn, tenant, user) = setup();
+        let account_id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO accounts (id, tenant_id, user_id, name, type, currency_code, is_liability, is_liquid,
+                opening_balance_minor, created_at, updated_at)
+             VALUES (?1, ?2, ?3, 'Brokerage', 'investment', 'QAR', 0, 0, 0, ?4, ?4)",
+            params![account_id, tenant, user, crate::dates::now_iso()],
+        )
+        .unwrap();
+        let fund_a = insert_instrument(&conn, &tenant, "FUND.A");
+        let fund_b = insert_instrument(&conn, &tenant, "FUND.B");
+        insert_trade(&conn, &tenant, &user, &account_id, &fund_a);
+        insert_trade(&conn, &tenant, &user, &account_id, &fund_b);
+        insert_valuation(
+            &conn,
+            &tenant,
+            &account_id,
+            Some(&fund_a),
+            30_000,
+            "2026-11-10",
+        );
+        insert_valuation(
+            &conn,
+            &tenant,
+            &account_id,
+            Some(&fund_b),
+            20_000,
+            "2026-11-10",
+        );
+
+        let worth = accounts::net_worth(&conn, &tenant, Some("2026-11-16")).unwrap();
+        // Regression: a single latest valuation row must not stand in for the
+        // whole account. Both holdings count.
+        assert_eq!(worth.invested_minor, 50_000);
+        assert_eq!(worth.assets_minor, 50_000);
+        assert_eq!(worth.net_minor, 50_000);
+    }
+
+    #[test]
+    fn an_unvalued_holding_falls_back_to_the_ledger_instead_of_a_partial_sum() {
+        let (conn, tenant, user) = setup();
+        let account_id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO accounts (id, tenant_id, user_id, name, type, currency_code, is_liability, is_liquid,
+                opening_balance_minor, created_at, updated_at)
+             VALUES (?1, ?2, ?3, 'Brokerage', 'investment', 'QAR', 0, 0, 0, ?4, ?4)",
+            params![account_id, tenant, user, crate::dates::now_iso()],
+        )
+        .unwrap();
+        let fund_a = insert_instrument(&conn, &tenant, "FUND.A");
+        let fund_b = insert_instrument(&conn, &tenant, "FUND.B");
+        insert_trade(&conn, &tenant, &user, &account_id, &fund_a);
+        insert_trade(&conn, &tenant, &user, &account_id, &fund_b);
+        insert_valuation(
+            &conn,
+            &tenant,
+            &account_id,
+            Some(&fund_a),
+            30_000,
+            "2026-11-10",
+        );
+
+        let worth = accounts::net_worth(&conn, &tenant, Some("2026-11-16")).unwrap();
+        // Fund B has no valuation: reporting 30,000 as the account value would
+        // silently understate it, so the ledger fallback (0 here) is used.
+        assert_eq!(worth.invested_minor, 0);
+    }
+
+    #[test]
+    fn a_linked_money_lent_is_counted_once() {
+        let (conn, tenant, user) = setup();
+        let account_id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO accounts (id, tenant_id, user_id, name, type, currency_code, is_liability, is_liquid,
+                opening_balance_minor, created_at, updated_at)
+             VALUES (?1, ?2, ?3, 'IOU account', 'other', 'QAR', 0, 1, 0, ?4, ?4)",
+            params![account_id, tenant, user, crate::dates::now_iso()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO liabilities (id, tenant_id, user_id, name, type, account_id, principal_minor,
+                outstanding_minor, currency_code, interest_rate_bps, payment_minor, status, created_at, updated_at)
+             VALUES (?1, ?2, ?3, 'Loan to friend', 'money_lent', ?4, 100000, 100000, 'QAR', 0, 0, 'active', ?5, ?5)",
+            params![uuid::Uuid::new_v4().to_string(), tenant, user, account_id, crate::dates::now_iso()],
+        )
+        .unwrap();
+
+        let worth = accounts::net_worth(&conn, &tenant, None).unwrap();
+        // The liability record is the source of truth; the linked account is
+        // not added on top of the receivable.
+        assert_eq!(worth.receivables_minor, 100_000);
+        assert_eq!(worth.assets_minor, 100_000);
+    }
+
+    #[test]
+    fn missing_fx_rates_are_reported_and_amounts_are_not_substituted() {
+        let (conn, tenant, user) = setup();
+        let account_id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO accounts (id, tenant_id, user_id, name, type, currency_code, is_liability, is_liquid,
+                opening_balance_minor, created_at, updated_at)
+             VALUES (?1, ?2, ?3, 'US bank', 'bank', 'USD', 0, 1, 0, ?4, ?4)",
+            params![account_id, tenant, user, crate::dates::now_iso()],
+        )
+        .unwrap();
+        // A posted USD opening recorded with a manual rate on 2026-06-01.
+        crate::services::tx::create_transaction(
+            &conn,
+            &tenant,
+            &user,
+            &crate::services::tx::TxInput {
+                kind: "opening".into(),
+                status: Some("posted".into()),
+                data_status: None,
+                description: "Opening".into(),
+                payee: None,
+                notes: None,
+                date: "2026-06-01".into(),
+                time: None,
+                account_id: account_id.clone(),
+                counter_account_id: None,
+                category_id: None,
+                income_source_id: None,
+                amount: "100.00".into(),
+                currency: None,
+                counter_amount: None,
+                fx_rate: Some("0.27".into()),
+                splits: None,
+                tags: None,
+                external_ref: None,
+                direction: Some("in".into()),
+            },
+        )
+        .unwrap();
+
+        // Before the first recorded rate the conversion is unavailable.
+        let worth = accounts::net_worth(&conn, &tenant, Some("2026-05-01")).unwrap();
+        assert_eq!(
+            worth.assets_minor, 0,
+            "an unconvertible balance must not be added raw"
+        );
+        assert_eq!(worth.missing_rates, vec!["USD".to_string()]);
+
+        // With the rate in range, the value converts normally (100 USD at 0.27 = 27 QAR).
+        let worth_after = accounts::net_worth(&conn, &tenant, Some("2026-06-01")).unwrap();
+        assert_eq!(worth_after.assets_minor, 2_700);
+        assert!(worth_after.missing_rates.is_empty());
     }
 }

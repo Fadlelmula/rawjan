@@ -53,11 +53,7 @@ pub fn create_transaction(state: State<'_, AppState>, input: TxInput) -> AppResu
 }
 
 #[tauri::command]
-pub fn update_transaction(
-    state: State<'_, AppState>,
-    id: String,
-    input: TxInput,
-) -> AppResult<()> {
+pub fn update_transaction(state: State<'_, AppState>, id: String, input: TxInput) -> AppResult<()> {
     let conn = state.conn();
     tx::update_transaction(&conn, &state.tenant_id, &state.user_id, &id, &input)
 }
@@ -95,10 +91,7 @@ pub struct DuplicateCheckInput {
 }
 
 #[tauri::command]
-pub fn check_duplicate(
-    state: State<'_, AppState>,
-    input: DuplicateCheckInput,
-) -> AppResult<Value> {
+pub fn check_duplicate(state: State<'_, AppState>, input: DuplicateCheckInput) -> AppResult<Value> {
     let conn = state.conn();
     let existing = tx::check_duplicate(
         &conn,

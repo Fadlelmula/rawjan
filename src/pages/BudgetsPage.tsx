@@ -533,13 +533,22 @@ function BudgetCard({
         <Badge tone="muted">{budget.currency}</Badge>
       </div>
 
+      {budget.fxUnavailable ? (
+        <div className="mt-3 rounded-lg border border-amber-500/20 bg-amber-500/[0.06] px-3 py-2 text-[0.62rem] leading-relaxed text-amber-200/80">
+          No exchange rate converts some spending into {budget.currency}. Those amounts are excluded
+          from these totals instead of being counted unconverted.
+        </div>
+      ) : null}
+
       <div className="mt-4 grid grid-cols-3 gap-2">
         <div>
           <div className="text-[0.56rem] uppercase tracking-[0.14em] text-zinc-600">Allocated</div>
           <div className="mt-0.5 font-display text-[0.95rem] text-zinc-200">{budget.allocated}</div>
         </div>
         <div>
-          <div className="text-[0.56rem] uppercase tracking-[0.14em] text-zinc-600">Spent</div>
+          <div className="text-[0.56rem] uppercase tracking-[0.14em] text-zinc-600">
+            Spent{budget.fxUnavailable ? " (partial)" : ""}
+          </div>
           <div className={clsx("mt-0.5 font-display text-[0.95rem]", over ? "text-lily-200" : "text-zinc-200")}>
             {budget.spent}
           </div>
@@ -571,7 +580,10 @@ function BudgetCard({
       {budget.allocations.length > 0 ? (
         <div className="mt-4 space-y-2 border-t border-white/[0.05] pt-3">
           {budget.allocations.map((allocation) => {
-            const allocationWidth = Math.min(100, Math.max(0, allocation.percentUsed));
+            const allocationWidth = Math.min(
+              100,
+              Math.max(0, allocation.percentUsed ?? 0),
+            );
             return (
               <div key={allocation.id}>
                 <div className="flex items-center justify-between gap-2 text-[0.66rem]">
@@ -590,14 +602,20 @@ function BudgetCard({
                       allocation.overBudget ? "text-lily-300" : "text-zinc-500",
                     )}
                   >
-                    {allocation.spent} / {allocation.amount}
+                    {allocation.fxUnavailable ? "— / " : `${allocation.spent} / `}
+                    {allocation.amount}
                   </span>
                 </div>
+                {allocation.fxUnavailable ? (
+                  <div className="mt-0.5 text-[0.58rem] text-amber-200/70">
+                    Spend could not be converted into {budget.currency} — no exchange rate.
+                  </div>
+                ) : null}
                 <div className="mt-1 h-1 overflow-hidden rounded-full bg-white/[0.04]">
                   <div
                     className={clsx(
                       "h-full rounded-full",
-                      progressTone(allocation.percentUsed, allocation.overBudget),
+                      progressTone(allocation.percentUsed ?? 0, allocation.overBudget ?? false),
                     )}
                     style={{ width: `${allocationWidth}%` }}
                   />

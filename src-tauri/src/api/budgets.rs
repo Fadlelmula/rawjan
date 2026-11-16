@@ -5,7 +5,10 @@ use crate::services::budgets::{self, BudgetDto, BudgetInput};
 use crate::state::AppState;
 
 #[tauri::command]
-pub fn list_budgets(state: State<'_, AppState>, reference: Option<String>) -> AppResult<Vec<BudgetDto>> {
+pub fn list_budgets(
+    state: State<'_, AppState>,
+    reference: Option<String>,
+) -> AppResult<Vec<BudgetDto>> {
     let conn = state.conn();
     budgets::list_budgets(&conn, &state.tenant_id, reference.as_deref())
 }
@@ -27,11 +30,7 @@ pub fn save_budget(
 }
 
 #[tauri::command]
-pub fn set_budget_active(
-    state: State<'_, AppState>,
-    id: String,
-    active: bool,
-) -> AppResult<()> {
+pub fn set_budget_active(state: State<'_, AppState>, id: String, active: bool) -> AppResult<()> {
     let conn = state.conn();
     budgets::set_budget_active(&conn, &state.tenant_id, &state.user_id, &id, active)
 }

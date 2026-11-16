@@ -1,8 +1,7 @@
 use std::collections::HashMap;
 
-
-use rust_decimal::{Decimal, RoundingStrategy};
 use rusqlite::{params, Connection, OptionalExtension};
+use rust_decimal::{Decimal, RoundingStrategy};
 use serde::{Deserialize, Serialize};
 
 use crate::dates::{self, iso, today_local};
@@ -208,7 +207,11 @@ fn format_scaled(scaled: i64, scale: u32) -> String {
         .to_string()
 }
 
-fn validate_account(conn: &Connection, tenant_id: &str, account_id: &str) -> AppResult<(String, String)> {
+fn validate_account(
+    conn: &Connection,
+    tenant_id: &str,
+    account_id: &str,
+) -> AppResult<(String, String)> {
     conn.query_row(
         "SELECT name, currency_code FROM accounts WHERE id = ?1 AND tenant_id = ?2",
         params![account_id, tenant_id],
@@ -297,7 +300,8 @@ fn load_trades(
                 notes,
             )| {
                 let quantity = Decimal::from_i128_with_scale(quantity_scaled as i128, SCALE);
-                let price = Decimal::from_i128_with_scale(price_scaled as i128, price_scale.max(0) as u32);
+                let price =
+                    Decimal::from_i128_with_scale(price_scaled as i128, price_scale.max(0) as u32);
                 TradeRecord {
                     id,
                     account_id,
@@ -390,7 +394,9 @@ pub fn list_instruments(conn: &Connection, tenant_id: &str) -> AppResult<Vec<Ins
         ))
     })? {
         let (account_id, instrument_id, value, date) = row?;
-        valuations.entry((account_id, instrument_id)).or_insert((value, date));
+        valuations
+            .entry((account_id, instrument_id))
+            .or_insert((value, date));
     }
 
     struct Position {
@@ -422,7 +428,10 @@ pub fn list_instruments(conn: &Connection, tenant_id: &str) -> AppResult<Vec<Ins
             realized: Decimal::ZERO,
         });
         let gross = trade.quantity * trade.price;
-        let fee = to_decimal(trade.fee_minor, currency_meta(conn, &trade.currency)?.exponent);
+        let fee = to_decimal(
+            trade.fee_minor,
+            currency_meta(conn, &trade.currency)?.exponent,
+        );
         if trade.side == "buy" {
             entry.quantity += trade.quantity;
             entry.cost += gross + fee;
@@ -474,8 +483,8 @@ pub fn list_instruments(conn: &Connection, tenant_id: &str) -> AppResult<Vec<Ins
             } else {
                 None
             };
-            let valuation = valuations
-                .get(&(position.account_id.clone(), position.instrument_id.clone()));
+            let valuation =
+                valuations.get(&(position.account_id.clone(), position.instrument_id.clone()));
             let market_minor = valuation.map(|(value, _)| *value);
             let unrealized_minor = market_minor.map(|value| value - cost_minor);
             if market_minor.is_some() {
@@ -535,8 +544,14 @@ pub fn list_instruments(conn: &Connection, tenant_id: &str) -> AppResult<Vec<Ins
             quantity: total_qty.round_dp(SCALE).normalize().to_string(),
             cost_basis_minor: total_cost_minor,
             cost_basis: format_amount(total_cost_minor, exp),
-            market_value_minor: if valued > 0 { Some(total_market_minor) } else { None },
-            market_value: if valued > 0 {
+            // A market value is only reported when every holding has one:
+            // a partial sum would silently understate the instrument.
+            market_value_minor: if holding_count > 0 && valued == holding_count {
+                Some(total_market_minor)
+            } else {
+                None
+            },
+            market_value: if holding_count > 0 && valued == holding_count {
                 Some(format_amount(total_market_minor, exp))
             } else {
                 None
@@ -570,7 +585,9 @@ pub fn portfolio_summary(conn: &Connection, tenant_id: &str) -> AppResult<Portfo
         if instrument.holding_count == 0 {
             continue;
         }
-        let entry = grouped.entry(instrument.currency.clone()).or_insert((0, 0, 0, 0, 0));
+        let entry = grouped
+            .entry(instrument.currency.clone())
+            .or_insert((0, 0, 0, 0, 0));
         entry.0 += instrument.cost_basis_minor;
         entry.1 += instrument.market_value_minor.unwrap_or(0);
         entry.2 += instrument.realized_minor;
@@ -632,7 +649,11 @@ pub fn save_instrument(
             params![
                 tenant_id,
                 input.symbol.trim(),
-                input.exchange.as_deref().map(str::trim).filter(|v| !v.is_empty()),
+                input
+                    .exchange
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty()),
                 id.filter(|v| !v.is_empty())
             ],
             |r| r.get(0),
@@ -764,7 +785,16 @@ pub fn delete_instrument(
     if changed == 0 {
         return Err(AppError::NotFound("Instrument not found.".into()));
     }
-    crate::db::audit(conn, tenant_id, user_id, "instrument", id, "delete", None, None)?;
+    crate::db::audit(
+        conn,
+        tenant_id,
+        user_id,
+        "instrument",
+        id,
+        "delete",
+        None,
+        None,
+    )?;
     Ok(())
 }
 
@@ -809,7 +839,9 @@ pub fn save_trade(
     input: &TradeInput,
 ) -> AppResult<String> {
     if !SIDES.contains(&input.side.as_str()) {
-        return Err(AppError::Validation("Trade side must be buy or sell.".into()));
+        return Err(AppError::Validation(
+            "Trade side must be buy or sell.".into(),
+        ));
     }
     dates::parse_date(&input.trade_date)?;
     validate_account(conn, tenant_id, &input.account_id)?;
@@ -818,13 +850,20 @@ pub fn save_trade(
 
     let quantity_scaled = parse_scaled(&input.quantity, SCALE)?;
     if quantity_scaled <= 0 {
-        return Err(AppError::Validation("Quantity must be greater than zero.".into()));
+        return Err(AppError::Validation(
+            "Quantity must be greater than zero.".into(),
+        ));
     }
     let price_scaled = parse_scaled(&input.price, SCALE)?;
     if price_scaled < 0 {
         return Err(AppError::Validation("Price cannot be negative.".into()));
     }
-    let fee_minor = match input.fee.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+    let fee_minor = match input
+        .fee
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
         Some(value) => {
             let parsed = parse_amount(value, exp)?;
             if parsed < 0 {
@@ -1148,11 +1187,18 @@ pub fn delete_valuation(
     Ok(())
 }
 
-pub fn latest_portfolio_value(conn: &Connection, tenant_id: &str) -> AppResult<i64> {
+/// Total portfolio market value in the primary currency, plus any currencies
+/// that could not be converted. Unconvertible amounts are excluded from the
+/// total and reported rather than silently dropped or substituted.
+pub fn latest_portfolio_value(conn: &Connection, tenant_id: &str) -> AppResult<(i64, Vec<String>)> {
     let base = primary_currency(conn, tenant_id)?;
     let summary = portfolio_summary(conn, tenant_id)?;
     let mut total = 0i64;
+    let mut missing = Vec::new();
     for currency in summary.currencies {
+        if currency.market_value_minor == 0 {
+            continue;
+        }
         if currency.currency == base {
             total += currency.market_value_minor;
         } else {
@@ -1164,12 +1210,13 @@ pub fn latest_portfolio_value(conn: &Connection, tenant_id: &str) -> AppResult<i
                 &base,
                 &iso(today_local()),
             );
-            if let Ok((value, _)) = converted {
-                total += value;
+            match converted {
+                Ok((value, _)) => total += value,
+                Err(_) => missing.push(currency.currency),
             }
         }
     }
-    Ok(total)
+    Ok((total, missing))
 }
 
 #[cfg(test)]
@@ -1278,6 +1325,89 @@ mod tests {
         assert!(matches!(error, AppError::Validation(_)));
     }
 
+    fn insert_second_instrument(conn: &Connection, tenant: &str) -> String {
+        let id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO instruments (id, tenant_id, symbol, name, asset_class, currency_code, exchange, isin, notes, created_at)
+             VALUES (?1, ?2, 'TEST2', 'Second Fund', 'etf', 'QAR', NULL, NULL, NULL, ?3)",
+            params![id, tenant, dates::now_iso()],
+        )
+        .unwrap();
+        id
+    }
+
+    #[test]
+    fn market_value_is_withheld_when_any_holding_is_unvalued() {
+        let (conn, tenant, user, account) = setup();
+        let first = instrument(&conn, &tenant, &user);
+        let second = insert_second_instrument(&conn, &tenant);
+        save_trade(
+            &conn,
+            &tenant,
+            &user,
+            None,
+            &trade(&account, &first, "buy", "10", "100.00"),
+        )
+        .unwrap();
+        save_trade(
+            &conn,
+            &tenant,
+            &user,
+            None,
+            &trade(&account, &second, "buy", "5", "50.00"),
+        )
+        .unwrap();
+        save_valuation(
+            &conn,
+            &tenant,
+            &user,
+            None,
+            &ValuationInput {
+                account_id: account.clone(),
+                instrument_id: first.clone(),
+                as_of_date: "2026-11-14".into(),
+                value: "1200.00".into(),
+                source_ref: None,
+            },
+        )
+        .unwrap();
+
+        let instruments = list_instruments(&conn, &tenant).unwrap();
+        let valued = instruments.iter().find(|i| i.id == first).unwrap();
+        assert_eq!(valued.market_value_minor, Some(120_000));
+        let unvalued = instruments.iter().find(|i| i.id == second).unwrap();
+        // A partial sum must not masquerade as the instrument's market value.
+        assert_eq!(unvalued.market_value_minor, None);
+        assert_eq!(unvalued.valued_holdings, 0);
+
+        let summary = portfolio_summary(&conn, &tenant).unwrap();
+        let currency = &summary.currencies[0];
+        assert_eq!(currency.holdings, 2);
+        assert_eq!(currency.valued_holdings, 1);
+        assert_eq!(currency.market_value_minor, 120_000);
+    }
+
+    #[test]
+    fn extreme_quantities_are_rejected_not_wrapped() {
+        let (conn, tenant, user, account) = setup();
+        let instrument_id = instrument(&conn, &tenant, &user);
+        let error = save_trade(
+            &conn,
+            &tenant,
+            &user,
+            None,
+            &trade(
+                &account,
+                &instrument_id,
+                "buy",
+                "9999999999999999999999",
+                "100.00",
+            ),
+        )
+        .unwrap_err();
+        assert!(matches!(error, AppError::Validation(_)));
+    }
+
     #[test]
     fn manual_valuation_drives_unrealized_gain() {
         let (conn, tenant, user, account) = setup();
@@ -1308,7 +1438,10 @@ mod tests {
         let item = &list_instruments(&conn, &tenant).unwrap()[0];
         assert_eq!(item.market_value_minor, Some(120_000));
         assert_eq!(item.unrealized_minor, Some(19_500));
-        assert_eq!(item.holdings[0].valuation_date.as_deref(), Some("2026-11-14"));
+        assert_eq!(
+            item.holdings[0].valuation_date.as_deref(),
+            Some("2026-11-14")
+        );
     }
 
     #[test]

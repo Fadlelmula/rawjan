@@ -32,7 +32,10 @@ pub fn local_instant(date: NaiveDate, time: Option<&str>) -> AppResult<String> {
     };
     let naive = date.and_time(parsed_time);
     match Local.from_local_datetime(&naive).earliest() {
-        Some(dt) => Ok(dt.with_timezone(&Utc).format("%Y-%m-%dT%H:%M:%SZ").to_string()),
+        Some(dt) => Ok(dt
+            .with_timezone(&Utc)
+            .format("%Y-%m-%dT%H:%M:%SZ")
+            .to_string()),
         None => Err(AppError::Validation(
             "The selected local date and time does not exist in this timezone.".into(),
         )),
@@ -40,7 +43,11 @@ pub fn local_instant(date: NaiveDate, time: Option<&str>) -> AppResult<String> {
 }
 
 pub fn days_in_month(year: i32, month: u32) -> u32 {
-    let (next_year, next_month) = if month == 12 { (year + 1, 1) } else { (year, month + 1) };
+    let (next_year, next_month) = if month == 12 {
+        (year + 1, 1)
+    } else {
+        (year, month + 1)
+    };
     let first_next = NaiveDate::from_ymd_opt(next_year, next_month, 1).expect("valid month");
     first_next.pred_opt().expect("valid date").day()
 }
@@ -76,8 +83,12 @@ pub fn cycle_period(date: NaiveDate, start_day: u32) -> (NaiveDate, NaiveDate) {
 
 pub fn calendar_month(date: NaiveDate) -> (NaiveDate, NaiveDate) {
     let start = NaiveDate::from_ymd_opt(date.year(), date.month(), 1).expect("valid date");
-    let end = NaiveDate::from_ymd_opt(date.year(), date.month(), days_in_month(date.year(), date.month()))
-        .expect("valid date");
+    let end = NaiveDate::from_ymd_opt(
+        date.year(),
+        date.month(),
+        days_in_month(date.year(), date.month()),
+    )
+    .expect("valid date");
     (start, end)
 }
 
@@ -134,7 +145,10 @@ pub fn each_month(start: NaiveDate, end: NaiveDate) -> Vec<(NaiveDate, NaiveDate
     while cursor <= end {
         let month_end = calendar_month(cursor).1;
         result.push((cursor.max(start), month_end.min(end)));
-        cursor = add_months_clamped(NaiveDate::from_ymd_opt(cursor.year(), cursor.month(), 1).expect("valid"), 1);
+        cursor = add_months_clamped(
+            NaiveDate::from_ymd_opt(cursor.year(), cursor.month(), 1).expect("valid"),
+            1,
+        );
     }
     result
 }
@@ -149,22 +163,46 @@ mod tests {
 
     #[test]
     fn cycle_starting_on_28_runs_through_27() {
-        assert_eq!(cycle_period(d(2026, 11, 14), 28), (d(2026, 10, 28), d(2026, 11, 27)));
-        assert_eq!(cycle_period(d(2026, 11, 28), 28), (d(2026, 11, 28), d(2026, 12, 27)));
-        assert_eq!(cycle_period(d(2026, 11, 27), 28), (d(2026, 10, 28), d(2026, 11, 27)));
+        assert_eq!(
+            cycle_period(d(2026, 11, 14), 28),
+            (d(2026, 10, 28), d(2026, 11, 27))
+        );
+        assert_eq!(
+            cycle_period(d(2026, 11, 28), 28),
+            (d(2026, 11, 28), d(2026, 12, 27))
+        );
+        assert_eq!(
+            cycle_period(d(2026, 11, 27), 28),
+            (d(2026, 10, 28), d(2026, 11, 27))
+        );
     }
 
     #[test]
     fn cycle_handles_february_and_31st() {
-        assert_eq!(cycle_period(d(2026, 3, 1), 31), (d(2026, 2, 28), d(2026, 3, 30)));
-        assert_eq!(cycle_period(d(2026, 3, 31), 31), (d(2026, 3, 31), d(2026, 4, 29)));
-        assert_eq!(cycle_period(d(2028, 2, 29), 30), (d(2028, 2, 29), d(2028, 3, 29)));
+        assert_eq!(
+            cycle_period(d(2026, 3, 1), 31),
+            (d(2026, 2, 28), d(2026, 3, 30))
+        );
+        assert_eq!(
+            cycle_period(d(2026, 3, 31), 31),
+            (d(2026, 3, 31), d(2026, 4, 29))
+        );
+        assert_eq!(
+            cycle_period(d(2028, 2, 29), 30),
+            (d(2028, 2, 29), d(2028, 3, 29))
+        );
     }
 
     #[test]
     fn calendar_month_is_inclusive() {
-        assert_eq!(calendar_month(d(2026, 2, 10)), (d(2026, 2, 1), d(2026, 2, 28)));
-        assert_eq!(calendar_month(d(2028, 2, 10)), (d(2028, 2, 1), d(2028, 2, 29)));
+        assert_eq!(
+            calendar_month(d(2026, 2, 10)),
+            (d(2026, 2, 1), d(2026, 2, 28))
+        );
+        assert_eq!(
+            calendar_month(d(2028, 2, 10)),
+            (d(2028, 2, 1), d(2028, 2, 29))
+        );
     }
 
     #[test]

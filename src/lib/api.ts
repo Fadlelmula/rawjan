@@ -336,12 +336,14 @@ export interface BudgetAllocation {
   categoryColor: string | null;
   amountMinor: number;
   amount: string;
-  spentMinor: number;
-  spent: string;
-  remainingMinor: number;
-  remaining: string;
-  percentUsed: number;
-  overBudget: boolean;
+  /** Converted into the budget currency; null when no exchange rate exists. */
+  spentMinor: number | null;
+  spent: string | null;
+  remainingMinor: number | null;
+  remaining: string | null;
+  percentUsed: number | null;
+  overBudget: boolean | null;
+  fxUnavailable: boolean;
   notes: string | null;
   sortOrder: number;
 }
@@ -360,11 +362,13 @@ export interface Budget {
   startDate: string;
   allocatedMinor: number;
   allocated: string;
+  /** Partial total when fxUnavailable is true: only convertible allocations. */
   spentMinor: number;
   spent: string;
   remainingMinor: number;
   remaining: string;
   percentUsed: number;
+  fxUnavailable: boolean;
   periodStart: string;
   periodEnd: string;
   allocations: BudgetAllocation[];
@@ -705,6 +709,9 @@ export interface MonthPoint {
   expense: string;
   netMinor: number;
   net: string;
+  incomeCount: number;
+  expenseCount: number;
+  generalCount: number;
   transactionCount: number;
 }
 

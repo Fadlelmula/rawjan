@@ -1,8 +1,6 @@
-
-
+use rusqlite::Connection;
 use rust_decimal::prelude::MathematicalOps;
 use rust_decimal::{Decimal, RoundingStrategy};
-use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{AppError, AppResult};
@@ -317,7 +315,11 @@ pub fn inflation(
     let value = Decimal::from(amount) / scale;
     let factor = (Decimal::ONE + rate / Decimal::from(100)).powi(input.years);
     let future = value * factor;
-    let real = if factor > Decimal::ZERO { value / factor } else { value };
+    let real = if factor > Decimal::ZERO {
+        value / factor
+    } else {
+        value
+    };
 
     let future_minor = minor_of(future, exp)?;
     let real_minor = minor_of(real, exp)?;

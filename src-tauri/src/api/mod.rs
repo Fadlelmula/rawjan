@@ -185,9 +185,8 @@ fn settings_map_inner(
     conn: &rusqlite::Connection,
     tenant_id: &str,
 ) -> AppResult<HashMap<String, Value>> {
-    let mut stmt = conn.prepare(
-        "SELECT key, value FROM tenant_settings WHERE tenant_id = ?1 ORDER BY key",
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT key, value FROM tenant_settings WHERE tenant_id = ?1 ORDER BY key")?;
     let rows = stmt.query_map([tenant_id], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     })?;
@@ -329,10 +328,9 @@ pub fn update_setting(state: State<'_, AppState>, input: SettingInput) -> AppRes
     }
     match key {
         "primary_currency" => {
-            let code = input
-                .value
-                .as_str()
-                .ok_or_else(|| AppError::Validation("Primary currency must be a currency code.".into()))?;
+            let code = input.value.as_str().ok_or_else(|| {
+                AppError::Validation("Primary currency must be a currency code.".into())
+            })?;
             let exists: Option<i64> = conn
                 .query_row(
                     "SELECT 1 FROM currencies WHERE code = ?1 AND is_active = 1",
@@ -350,7 +348,9 @@ pub fn update_setting(state: State<'_, AppState>, input: SettingInput) -> AppRes
                 .as_i64()
                 .ok_or_else(|| AppError::Validation("Budget cycle day must be a number.".into()))?;
             if !(1..=31).contains(&day) {
-                return Err(AppError::Validation("Budget cycle day must be between 1 and 31.".into()));
+                return Err(AppError::Validation(
+                    "Budget cycle day must be between 1 and 31.".into(),
+                ));
             }
         }
         "salary_pay_day" => {
@@ -359,14 +359,15 @@ pub fn update_setting(state: State<'_, AppState>, input: SettingInput) -> AppRes
                 .as_i64()
                 .ok_or_else(|| AppError::Validation("Pay day must be a number.".into()))?;
             if !(1..=31).contains(&day) {
-                return Err(AppError::Validation("Pay day must be between 1 and 31.".into()));
+                return Err(AppError::Validation(
+                    "Pay day must be between 1 and 31.".into(),
+                ));
             }
         }
         "backup_retention_days" => {
-            let days = input
-                .value
-                .as_i64()
-                .ok_or_else(|| AppError::Validation("Retention must be a number of days.".into()))?;
+            let days = input.value.as_i64().ok_or_else(|| {
+                AppError::Validation("Retention must be a number of days.".into())
+            })?;
             if !(1..=3650).contains(&days) {
                 return Err(AppError::Validation(
                     "Retention must be between 1 and 3650 days.".into(),
@@ -374,10 +375,9 @@ pub fn update_setting(state: State<'_, AppState>, input: SettingInput) -> AppRes
             }
         }
         "emergency_fund_months" => {
-            let months = input
-                .value
-                .as_i64()
-                .ok_or_else(|| AppError::Validation("Emergency fund months must be a number.".into()))?;
+            let months = input.value.as_i64().ok_or_else(|| {
+                AppError::Validation("Emergency fund months must be a number.".into())
+            })?;
             if !(1..=36).contains(&months) {
                 return Err(AppError::Validation(
                     "Emergency fund months must be between 1 and 36.".into(),

@@ -60,7 +60,11 @@ pub struct AccountInfo {
     pub is_active: bool,
 }
 
-pub fn load_account(conn: &Connection, tenant_id: &str, account_id: &str) -> AppResult<AccountInfo> {
+pub fn load_account(
+    conn: &Connection,
+    tenant_id: &str,
+    account_id: &str,
+) -> AppResult<AccountInfo> {
     conn.query_row(
         "SELECT id, name, currency_code, type, is_liability, is_active
          FROM accounts WHERE id = ?1 AND tenant_id = ?2",
@@ -106,12 +110,28 @@ fn find_category_by_name(
 }
 
 fn normalize_text(value: &str) -> String {
-    value.to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect()
+    value
+        .to_lowercase()
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .collect()
 }
 
-pub(crate) fn dedupe_hash(account_id: &str, date: &str, amount_minor: i64, description: &str, kind: &str) -> String {
+pub(crate) fn dedupe_hash(
+    account_id: &str,
+    date: &str,
+    amount_minor: i64,
+    description: &str,
+    kind: &str,
+) -> String {
     let mut hasher = Sha256::new();
-    for part in [account_id, date, &amount_minor.to_string(), &normalize_text(description), kind] {
+    for part in [
+        account_id,
+        date,
+        &amount_minor.to_string(),
+        &normalize_text(description),
+        kind,
+    ] {
         hasher.update(part.as_bytes());
         hasher.update(b"|");
     }
@@ -209,15 +229,27 @@ fn create_transaction_inner(
 ) -> AppResult<PostResult> {
     let account = load_account(conn, tenant_id, &input.account_id)?;
     if !account.is_active {
-        return Err(AppError::Validation("The selected account is archived.".into()));
+        return Err(AppError::Validation(
+            "The selected account is archived.".into(),
+        ));
     }
     let kind = input.kind.as_str();
     const KINDS: &[&str] = &[
-        "expense", "income", "transfer", "refund", "fee", "investment_buy",
-        "investment_sell", "dividend", "adjustment", "opening",
+        "expense",
+        "income",
+        "transfer",
+        "refund",
+        "fee",
+        "investment_buy",
+        "investment_sell",
+        "dividend",
+        "adjustment",
+        "opening",
     ];
     if !KINDS.contains(&kind) {
-        return Err(AppError::Validation(format!("Unknown transaction kind '{kind}'.")));
+        return Err(AppError::Validation(format!(
+            "Unknown transaction kind '{kind}'."
+        )));
     }
     let status = input.status.clone().unwrap_or_else(|| "posted".into());
     if !["draft", "pending", "posted", "reconciled"].contains(&status.as_str()) {
@@ -226,7 +258,11 @@ fn create_transaction_inner(
         ));
     }
     let data_status = input.data_status.clone().unwrap_or_else(|| {
-        if status == "pending" { "pending".into() } else { "actual".into() }
+        if status == "pending" {
+            "pending".into()
+        } else {
+            "actual".into()
+        }
     });
     if !["actual", "pending", "planned", "estimated", "forecast"].contains(&data_status.as_str()) {
         return Err(AppError::Validation("Invalid data status.".into()));
@@ -239,7 +275,10 @@ fn create_transaction_inner(
     let local_date = iso(date);
     let occurred_at = local_instant(date, input.time.as_deref())?;
     let base_currency = primary_currency(conn, tenant_id)?;
-    let tx_currency = input.currency.clone().unwrap_or_else(|| account.currency.clone());
+    let tx_currency = input
+        .currency
+        .clone()
+        .unwrap_or_else(|| account.currency.clone());
     if tx_currency != account.currency {
         return Err(AppError::Validation(
             "Amounts must be entered in the account's currency. Use a foreign-currency account for other currencies.".into(),
@@ -258,43 +297,76 @@ fn create_transaction_inner(
         None
     } else if let Some(manual) = input.fx_rate.as_deref().filter(|v| !v.trim().is_empty()) {
         let rate = parse_rate(manual)?;
-        Some(add_manual_rate(conn, tenant_id, &tx_currency, &base_currency, rate, &local_date)?)
+        Some(add_manual_rate(
+            conn,
+            tenant_id,
+            &tx_currency,
+            &base_currency,
+            rate,
+            &local_date,
+        )?)
     } else {
-        Some(require_rate(conn, tenant_id, &tx_currency, &base_currency, &local_date)?)
+        Some(require_rate(
+            conn,
+            tenant_id,
+            &tx_currency,
+            &base_currency,
+            &local_date,
+        )?)
     };
-    let rate_value = rate_snapshot.as_ref().map(|r| r.rate).unwrap_or(rust_decimal::Decimal::ONE);
+    let rate_value = rate_snapshot
+        .as_ref()
+        .map(|r| r.rate)
+        .unwrap_or(rust_decimal::Decimal::ONE);
     let base_amount = if tx_currency == base_currency {
         amount_minor
     } else {
         convert_minor(amount_minor, tx_exp, base_exp, rate_value)?
     };
     if base_amount <= 0 {
-        return Err(AppError::Validation("Converted base amount is zero. Check the exchange rate.".into()));
+        return Err(AppError::Validation(
+            "Converted base amount is zero. Check the exchange rate.".into(),
+        ));
     }
     let fx_rate_id = rate_snapshot.as_ref().and_then(|r| r.id.clone());
 
-    let counter = match input.counter_account_id.as_deref().filter(|v| !v.is_empty()) {
+    let counter = match input
+        .counter_account_id
+        .as_deref()
+        .filter(|v| !v.is_empty())
+    {
         Some(id) => Some(load_account(conn, tenant_id, id)?),
         None => None,
     };
     if matches!(kind, "transfer" | "investment_buy" | "investment_sell") && counter.is_none() {
-        return Err(AppError::Validation("Select the destination account.".into()));
+        return Err(AppError::Validation(
+            "Select the destination account.".into(),
+        ));
     }
     let counter_minor = match &counter {
         Some(c) => {
             if c.id == account.id {
-                return Err(AppError::Validation("Source and destination accounts must differ.".into()));
-            }
-            if matches!(kind, "investment_buy" | "investment_sell") && c.account_type != "investment" {
                 return Err(AppError::Validation(
-                    "Investment transactions require an investment account as the destination.".into(),
+                    "Source and destination accounts must differ.".into(),
+                ));
+            }
+            if matches!(kind, "investment_buy" | "investment_sell")
+                && c.account_type != "investment"
+            {
+                return Err(AppError::Validation(
+                    "Investment transactions require an investment account as the destination."
+                        .into(),
                 ));
             }
             if c.currency == account.currency {
                 amount_minor
             } else {
                 let cexp = exponent(conn, &c.currency)?;
-                match input.counter_amount.as_deref().filter(|v| !v.trim().is_empty()) {
+                match input
+                    .counter_amount
+                    .as_deref()
+                    .filter(|v| !v.trim().is_empty())
+                {
                     Some(value) => parse_amount(value, cexp)?,
                     None => {
                         return Err(AppError::Validation(format!(
@@ -308,7 +380,9 @@ fn create_transaction_inner(
         None => 0,
     };
     if counter.is_some() && counter_minor <= 0 {
-        return Err(AppError::Validation("Destination amount must be greater than zero.".into()));
+        return Err(AppError::Validation(
+            "Destination amount must be greater than zero.".into(),
+        ));
     }
 
     // Category legs (splits supported for expenses and refunds).
@@ -329,13 +403,22 @@ fn create_transaction_inner(
             for split in splits {
                 let split_minor = parse_amount(&split.amount, tx_exp)?;
                 if split_minor <= 0 {
-                    return Err(AppError::Validation("Each split must be greater than zero.".into()));
+                    return Err(AppError::Validation(
+                        "Each split must be greater than zero.".into(),
+                    ));
                 }
                 if category_kind(conn, tenant_id, &split.category_id)? != "expense" {
-                    return Err(AppError::Validation("Split categories must be expense categories.".into()));
+                    return Err(AppError::Validation(
+                        "Split categories must be expense categories.".into(),
+                    ));
                 }
                 total += split_minor;
-                category_legs.push((split.category_id.clone(), split_minor, tx_currency.clone(), split.note.clone()));
+                category_legs.push((
+                    split.category_id.clone(),
+                    split_minor,
+                    tx_currency.clone(),
+                    split.note.clone(),
+                ));
             }
             if total != amount_minor {
                 return Err(AppError::Validation(format!(
@@ -348,11 +431,21 @@ fn create_transaction_inner(
             let category_id = match input.category_id.clone().filter(|v| !v.is_empty()) {
                 Some(id) => id,
                 None if kind == "fee" => find_category_by_name(conn, tenant_id, "Fees", "expense")?
-                    .ok_or_else(|| AppError::Validation("Create an expense category first.".into()))?,
-                None if kind == "opening" => find_category_by_name(conn, tenant_id, "Opening Balance", "equity")?
-                    .ok_or_else(|| AppError::Validation("Create an equity category first.".into()))?,
-                None if kind == "adjustment" => find_category_by_name(conn, tenant_id, "Balance Adjustment", "equity")?
-                    .ok_or_else(|| AppError::Validation("Create an equity category first.".into()))?,
+                    .ok_or_else(|| {
+                        AppError::Validation("Create an expense category first.".into())
+                    })?,
+                None if kind == "opening" => {
+                    find_category_by_name(conn, tenant_id, "Opening Balance", "equity")?
+                        .ok_or_else(|| {
+                            AppError::Validation("Create an equity category first.".into())
+                        })?
+                }
+                None if kind == "adjustment" => {
+                    find_category_by_name(conn, tenant_id, "Balance Adjustment", "equity")?
+                        .ok_or_else(|| {
+                            AppError::Validation("Create an equity category first.".into())
+                        })?
+                }
                 None => return Err(AppError::Validation("Select a category.".into())),
             };
             let ck = category_kind(conn, tenant_id, &category_id)?;
@@ -403,7 +496,9 @@ fn create_transaction_inner(
 
     let direction = input.direction.clone().unwrap_or_else(|| "in".into());
     if matches!(kind, "adjustment" | "opening") && !matches!(direction.as_str(), "in" | "out") {
-        return Err(AppError::Validation("Direction must be 'in' or 'out'.".into()));
+        return Err(AppError::Validation(
+            "Direction must be 'in' or 'out'.".into(),
+        ));
     }
 
     let mut legs: Vec<Leg> = Vec::new();
@@ -419,8 +514,15 @@ fn create_transaction_inner(
     };
     match kind {
         "expense" | "fee" => {
-            legs.push(account_leg("credit", amount_minor, &account.currency, base_amount));
-            for ((category_id, amount, currency, note), base) in category_legs.iter().zip(category_bases.iter()) {
+            legs.push(account_leg(
+                "credit",
+                amount_minor,
+                &account.currency,
+                base_amount,
+            ));
+            for ((category_id, amount, currency, note), base) in
+                category_legs.iter().zip(category_bases.iter())
+            {
                 legs.push(Leg {
                     account_id: None,
                     category_id: Some(category_id.clone()),
@@ -434,8 +536,15 @@ fn create_transaction_inner(
             }
         }
         "refund" => {
-            legs.push(account_leg("debit", amount_minor, &account.currency, base_amount));
-            for ((category_id, amount, currency, note), base) in category_legs.iter().zip(category_bases.iter()) {
+            legs.push(account_leg(
+                "debit",
+                amount_minor,
+                &account.currency,
+                base_amount,
+            ));
+            for ((category_id, amount, currency, note), base) in
+                category_legs.iter().zip(category_bases.iter())
+            {
                 legs.push(Leg {
                     account_id: None,
                     category_id: Some(category_id.clone()),
@@ -449,8 +558,15 @@ fn create_transaction_inner(
             }
         }
         "income" | "dividend" => {
-            legs.push(account_leg("debit", amount_minor, &account.currency, base_amount));
-            for ((category_id, amount, currency, note), base) in category_legs.iter().zip(category_bases.iter()) {
+            legs.push(account_leg(
+                "debit",
+                amount_minor,
+                &account.currency,
+                base_amount,
+            ));
+            for ((category_id, amount, currency, note), base) in
+                category_legs.iter().zip(category_bases.iter())
+            {
                 legs.push(Leg {
                     account_id: None,
                     category_id: Some(category_id.clone()),
@@ -467,7 +583,12 @@ fn create_transaction_inner(
             let c = counter.as_ref().expect("validated counter account");
             match kind {
                 "transfer" => {
-                    legs.push(account_leg("credit", amount_minor, &account.currency, base_amount));
+                    legs.push(account_leg(
+                        "credit",
+                        amount_minor,
+                        &account.currency,
+                        base_amount,
+                    ));
                     legs.push(Leg {
                         account_id: Some(c.id.clone()),
                         category_id: None,
@@ -480,7 +601,12 @@ fn create_transaction_inner(
                     });
                 }
                 "investment_buy" => {
-                    legs.push(account_leg("credit", amount_minor, &account.currency, base_amount));
+                    legs.push(account_leg(
+                        "credit",
+                        amount_minor,
+                        &account.currency,
+                        base_amount,
+                    ));
                     legs.push(Leg {
                         account_id: Some(c.id.clone()),
                         category_id: None,
@@ -493,7 +619,12 @@ fn create_transaction_inner(
                     });
                 }
                 _ => {
-                    legs.push(account_leg("debit", amount_minor, &account.currency, base_amount));
+                    legs.push(account_leg(
+                        "debit",
+                        amount_minor,
+                        &account.currency,
+                        base_amount,
+                    ));
                     legs.push(Leg {
                         account_id: Some(c.id.clone()),
                         category_id: None,
@@ -508,10 +639,16 @@ fn create_transaction_inner(
             }
         }
         "adjustment" | "opening" => {
-            let (category_id, amount, currency, note) = category_legs.first().expect("category leg");
+            let (category_id, amount, currency, note) =
+                category_legs.first().expect("category leg");
             let base = category_bases.first().copied().unwrap_or(base_amount);
             if direction == "in" {
-                legs.push(account_leg("debit", amount_minor, &account.currency, base_amount));
+                legs.push(account_leg(
+                    "debit",
+                    amount_minor,
+                    &account.currency,
+                    base_amount,
+                ));
                 legs.push(Leg {
                     account_id: None,
                     category_id: Some(category_id.clone()),
@@ -523,7 +660,12 @@ fn create_transaction_inner(
                     memo: note.clone(),
                 });
             } else {
-                legs.push(account_leg("credit", amount_minor, &account.currency, base_amount));
+                legs.push(account_leg(
+                    "credit",
+                    amount_minor,
+                    &account.currency,
+                    base_amount,
+                ));
                 legs.push(Leg {
                     account_id: None,
                     category_id: Some(category_id.clone()),
@@ -539,8 +681,16 @@ fn create_transaction_inner(
         _ => unreachable!(),
     }
 
-    let debit_total: i64 = legs.iter().filter(|l| l.entry_type == "debit").map(|l| l.base_minor).sum();
-    let credit_total: i64 = legs.iter().filter(|l| l.entry_type == "credit").map(|l| l.base_minor).sum();
+    let debit_total: i64 = legs
+        .iter()
+        .filter(|l| l.entry_type == "debit")
+        .map(|l| l.base_minor)
+        .sum();
+    let credit_total: i64 = legs
+        .iter()
+        .filter(|l| l.entry_type == "credit")
+        .map(|l| l.base_minor)
+        .sum();
     if debit_total != credit_total {
         return Err(AppError::Internal(format!(
             "Ledger imbalance detected (debits {debit_total}, credits {credit_total}). The transaction was not saved."
@@ -561,16 +711,28 @@ fn create_transaction_inner(
         )
         .optional()?;
 
-    let transaction_id = fixed_id.map(str::to_string).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let transaction_id = fixed_id
+        .map(str::to_string)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let created_at = fixed_created_at.map(str::to_string).unwrap_or_else(now_iso);
     let now = now_iso();
-    let hash = dedupe_hash(&account.id, &local_date, amount_minor, &input.description, kind);
+    let hash = dedupe_hash(
+        &account.id,
+        &local_date,
+        amount_minor,
+        &input.description,
+        kind,
+    );
     let posted_at = if matches!(status.as_str(), "posted" | "reconciled") {
         Some(now.clone())
     } else {
         None
     };
-    let reconciled_at = if status == "reconciled" { Some(now.clone()) } else { None };
+    let reconciled_at = if status == "reconciled" {
+        Some(now.clone())
+    } else {
+        None
+    };
     let is_split_int = if is_split { 1i64 } else { 0i64 };
 
     let db_tx = conn.unchecked_transaction()?;
@@ -747,7 +909,9 @@ pub fn list_transactions(
     }
     if let Some(v) = filter.account_id.filter(|v| !v.is_empty()) {
         let p = args.len() + 1;
-        where_sql.push_str(&format!(" AND (t.account_id = ?{p} OR t.counter_account_id = ?{p})"));
+        where_sql.push_str(&format!(
+            " AND (t.account_id = ?{p} OR t.counter_account_id = ?{p})"
+        ));
         args.push(Box::new(v.to_string()));
     }
     if let Some(v) = filter.category_id.filter(|v| !v.is_empty()) {
@@ -764,7 +928,8 @@ pub fn list_transactions(
     }
     if let Some(v) = filter.status.filter(|v| !v.is_empty()) {
         if v == "effective" {
-            where_sql.push_str(" AND t.status IN ('posted','reconciled') AND t.reversal_of_id IS NULL");
+            where_sql
+                .push_str(" AND t.status IN ('posted','reconciled') AND t.reversal_of_id IS NULL");
         } else if v == "needs_review" {
             where_sql.push_str(" AND (t.status IN ('draft','pending') OR t.data_status IN ('planned','estimated','forecast'))");
         } else {
@@ -816,57 +981,66 @@ pub fn list_transactions(
 
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt
-        .query_map(rusqlite::params_from_iter(args.iter().map(|b| b.as_ref())), |row| {
-            let amount_minor: i64 = row.get(17)?;
-            let base_minor: i64 = row.get(19)?;
-            let account_currency: String = row.get(11)?;
-            let original_currency: String = row.get(18)?;
-            let account_exp = exponent(conn, &account_currency).unwrap_or(2);
-            let tags_raw: Option<String> = row.get(32)?;
-            Ok(TransactionRow {
-                id: row.get(0)?,
-                kind: row.get(1)?,
-                status: row.get(2)?,
-                data_status: row.get(3)?,
-                description: row.get(4)?,
-                payee: row.get(5)?,
-                notes: row.get(6)?,
-                local_date: row.get(7)?,
-                occurred_at: row.get(8)?,
-                account_id: row.get(9)?,
-                account_name: row.get(10)?,
-                account_currency,
-                counter_account_id: row.get(12)?,
-                counter_account_name: row.get(13)?,
-                category_id: row.get(14)?,
-                category_name: row.get(15)?,
-                income_source_id: row.get(16)?,
-                amount_minor,
-                amount: format_amount(amount_minor, account_exp),
-                base_minor,
-                base: format_amount(base_minor, base_exp),
-                base_currency: base_currency.clone(),
-                is_split: row.get::<_, i64>(21)? == 1,
-                recurring_rule_id: row.get(22)?,
-                reversal_of_id: row.get(23)?,
-                transfer_group_id: row.get(24)?,
-                created_at: row.get(25)?,
-                posted_at: row.get(26)?,
-                reconciled_at: row.get(27)?,
-                fx_rate: row.get(28)?,
-                fx_rate_date: row.get(29)?,
-                split_count: row.get(30)?,
-                attachment_count: row.get(31)?,
-                original_currency,
-                tags: tags_raw.map(|v| v.split("||").map(str::to_string).collect()).unwrap_or_default(),
-            })
-        })?
+        .query_map(
+            rusqlite::params_from_iter(args.iter().map(|b| b.as_ref())),
+            |row| {
+                let amount_minor: i64 = row.get(17)?;
+                let base_minor: i64 = row.get(19)?;
+                let account_currency: String = row.get(11)?;
+                let original_currency: String = row.get(18)?;
+                let account_exp = exponent(conn, &account_currency).unwrap_or(2);
+                let tags_raw: Option<String> = row.get(32)?;
+                Ok(TransactionRow {
+                    id: row.get(0)?,
+                    kind: row.get(1)?,
+                    status: row.get(2)?,
+                    data_status: row.get(3)?,
+                    description: row.get(4)?,
+                    payee: row.get(5)?,
+                    notes: row.get(6)?,
+                    local_date: row.get(7)?,
+                    occurred_at: row.get(8)?,
+                    account_id: row.get(9)?,
+                    account_name: row.get(10)?,
+                    account_currency,
+                    counter_account_id: row.get(12)?,
+                    counter_account_name: row.get(13)?,
+                    category_id: row.get(14)?,
+                    category_name: row.get(15)?,
+                    income_source_id: row.get(16)?,
+                    amount_minor,
+                    amount: format_amount(amount_minor, account_exp),
+                    base_minor,
+                    base: format_amount(base_minor, base_exp),
+                    base_currency: base_currency.clone(),
+                    is_split: row.get::<_, i64>(21)? == 1,
+                    recurring_rule_id: row.get(22)?,
+                    reversal_of_id: row.get(23)?,
+                    transfer_group_id: row.get(24)?,
+                    created_at: row.get(25)?,
+                    posted_at: row.get(26)?,
+                    reconciled_at: row.get(27)?,
+                    fx_rate: row.get(28)?,
+                    fx_rate_date: row.get(29)?,
+                    split_count: row.get(30)?,
+                    attachment_count: row.get(31)?,
+                    original_currency,
+                    tags: tags_raw
+                        .map(|v| v.split("||").map(str::to_string).collect())
+                        .unwrap_or_default(),
+                })
+            },
+        )?
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok((rows, total))
 }
 
-pub fn get_transaction(conn: &Connection, tenant_id: &str, id: &str) -> AppResult<serde_json::Value> {
+pub fn get_transaction(
+    conn: &Connection,
+    tenant_id: &str,
+    id: &str,
+) -> AppResult<serde_json::Value> {
     let mut stmt = conn.prepare(
         "SELECT t.id, t.kind, t.status, t.data_status, t.description, t.payee, t.notes, t.local_date, t.occurred_at,
                 t.account_id, a.name, t.counter_account_id, ca.name, t.category_id, c.name, t.original_amount_minor,
@@ -938,18 +1112,17 @@ pub fn get_transaction(conn: &Connection, tenant_id: &str, id: &str) -> AppResul
             "SELECT s.id, s.category_id, c.name, s.amount_minor, s.note FROM transaction_splits s
              JOIN categories c ON c.id = s.category_id WHERE s.transaction_id = ?1 ORDER BY s.sort_order",
         )?;
-        let mapped = split_stmt
-            .query_map([id], |row| {
-                let amount: i64 = row.get(3)?;
-                Ok(serde_json::json!({
-                    "id": row.get::<_, String>(0)?,
-                    "categoryId": row.get::<_, String>(1)?,
-                    "categoryName": row.get::<_, String>(2)?,
-                    "amountMinor": amount,
-                    "amount": format_amount(amount, exp),
-                    "note": row.get::<_, Option<String>>(4)?,
-                }))
-            })?;
+        let mapped = split_stmt.query_map([id], |row| {
+            let amount: i64 = row.get(3)?;
+            Ok(serde_json::json!({
+                "id": row.get::<_, String>(0)?,
+                "categoryId": row.get::<_, String>(1)?,
+                "categoryName": row.get::<_, String>(2)?,
+                "amountMinor": amount,
+                "amount": format_amount(amount, exp),
+                "note": row.get::<_, Option<String>>(4)?,
+            }))
+        })?;
         mapped.collect::<Result<Vec<_>, _>>()?
     };
     let tags: Vec<serde_json::Value> = {
@@ -1033,7 +1206,10 @@ pub fn set_status(
     let mut args: Vec<Box<dyn rusqlite::ToSql>> =
         vec![Box::new(new_status.to_string()), Box::new(now.clone())];
     if new_status == "posted" {
-        sets.push(format!("posted_at = COALESCE(posted_at, ?{})", args.len() + 1));
+        sets.push(format!(
+            "posted_at = COALESCE(posted_at, ?{})",
+            args.len() + 1
+        ));
         args.push(Box::new(now.clone()));
     }
     if new_status == "reconciled" {
@@ -1052,8 +1228,20 @@ pub fn set_status(
     );
     args.push(Box::new(id.to_string()));
     args.push(Box::new(tenant_id.to_string()));
-    conn.execute(&sql, rusqlite::params_from_iter(args.iter().map(|b| b.as_ref())))?;
-    db::audit(conn, tenant_id, user_id, "transaction", id, &format!("status:{new_status}"), None, None)?;
+    conn.execute(
+        &sql,
+        rusqlite::params_from_iter(args.iter().map(|b| b.as_ref())),
+    )?;
+    db::audit(
+        conn,
+        tenant_id,
+        user_id,
+        "transaction",
+        id,
+        &format!("status:{new_status}"),
+        None,
+        None,
+    )?;
     Ok(())
 }
 
@@ -1082,7 +1270,9 @@ pub fn reverse_transaction(
         |r| r.get(0),
     )?;
     if already > 0 {
-        return Err(AppError::Conflict("This transaction has already been reversed.".into()));
+        return Err(AppError::Conflict(
+            "This transaction has already been reversed.".into(),
+        ));
     }
 
     #[derive(Clone)]
@@ -1121,12 +1311,19 @@ pub fn reverse_transaction(
             "SELECT category_id, amount_minor, base_amount_minor, note, sort_order FROM transaction_splits WHERE transaction_id = ?1",
         )?;
         let mapped = stmt.query_map([id], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
         })?;
         mapped.collect::<Result<Vec<_>, _>>()?
     };
     let tags: Vec<String> = {
-        let mut stmt = conn.prepare("SELECT tag_id FROM transaction_tags WHERE transaction_id = ?1")?;
+        let mut stmt =
+            conn.prepare("SELECT tag_id FROM transaction_tags WHERE transaction_id = ?1")?;
         let mapped = stmt.query_map([id], |row| row.get(0))?;
         mapped.collect::<Result<Vec<_>, _>>()?
     };
@@ -1266,10 +1463,20 @@ pub fn update_transaction(
             ],
         )?;
         if let Some(new_category) = input.category_id.as_deref().filter(|v| !v.is_empty()) {
-            let is_split: i64 = conn.query_row("SELECT is_split FROM transactions WHERE id = ?1", [id], |r| r.get(0))?;
+            let is_split: i64 = conn.query_row(
+                "SELECT is_split FROM transactions WHERE id = ?1",
+                [id],
+                |r| r.get(0),
+            )?;
             if is_split == 0 && Some(new_category.to_string()) != old_category {
-                let kind: String = conn.query_row("SELECT kind FROM transactions WHERE id = ?1", [id], |r| r.get(0))?;
-                if matches!(kind.as_str(), "expense" | "income" | "refund" | "fee" | "dividend") {
+                let kind: String =
+                    conn.query_row("SELECT kind FROM transactions WHERE id = ?1", [id], |r| {
+                        r.get(0)
+                    })?;
+                if matches!(
+                    kind.as_str(),
+                    "expense" | "income" | "refund" | "fee" | "dividend"
+                ) {
                     category_kind(conn, tenant_id, new_category)?;
                     conn.execute(
                         "UPDATE ledger_entries SET category_id = ?1 WHERE transaction_id = ?2 AND category_id IS NOT NULL",
@@ -1287,25 +1494,52 @@ pub fn update_transaction(
                 }
             }
         }
-        db::audit(conn, tenant_id, user_id, "transaction", id, "update-metadata", None, None)?;
+        db::audit(
+            conn,
+            tenant_id,
+            user_id,
+            "transaction",
+            id,
+            "update-metadata",
+            None,
+            None,
+        )?;
         return Ok(());
     }
 
     if matches!(status.as_str(), "cancelled" | "reversed") {
-        return Err(AppError::Conflict("Cancelled or reversed transactions cannot be edited.".into()));
+        return Err(AppError::Conflict(
+            "Cancelled or reversed transactions cannot be edited.".into(),
+        ));
     }
 
     // Drafts and pending records can be fully re-entered. Delete only their own rows.
     let db_tx = conn.unchecked_transaction()?;
-    db_tx.execute("DELETE FROM transaction_splits WHERE transaction_id = ?1", [id])?;
+    db_tx.execute(
+        "DELETE FROM transaction_splits WHERE transaction_id = ?1",
+        [id],
+    )?;
     db_tx.execute("DELETE FROM ledger_entries WHERE transaction_id = ?1", [id])?;
-    db_tx.execute("DELETE FROM transaction_tags WHERE transaction_id = ?1", [id])?;
-    db_tx.execute("DELETE FROM transactions WHERE id = ?1 AND tenant_id = ?2", params![id, tenant_id])?;
+    db_tx.execute(
+        "DELETE FROM transaction_tags WHERE transaction_id = ?1",
+        [id],
+    )?;
+    db_tx.execute(
+        "DELETE FROM transactions WHERE id = ?1 AND tenant_id = ?2",
+        params![id, tenant_id],
+    )?;
     db_tx.commit()?;
 
     let mut new_input = input.clone();
     new_input.status = Some(status);
-    create_transaction_inner(conn, tenant_id, user_id, Some(id), Some(&created_at), &new_input)?;
+    create_transaction_inner(
+        conn,
+        tenant_id,
+        user_id,
+        Some(id),
+        Some(&created_at),
+        &new_input,
+    )?;
     Ok(())
 }
 
@@ -1323,8 +1557,20 @@ pub fn delete_draft(conn: &Connection, tenant_id: &str, user_id: &str, id: &str)
             "Only draft transactions can be deleted. Posted records must be reversed.".into(),
         ));
     }
-    conn.execute("DELETE FROM transactions WHERE id = ?1 AND tenant_id = ?2", params![id, tenant_id])?;
-    db::audit(conn, tenant_id, user_id, "transaction", id, "delete-draft", None, None)?;
+    conn.execute(
+        "DELETE FROM transactions WHERE id = ?1 AND tenant_id = ?2",
+        params![id, tenant_id],
+    )?;
+    db::audit(
+        conn,
+        tenant_id,
+        user_id,
+        "transaction",
+        id,
+        "delete-draft",
+        None,
+        None,
+    )?;
     Ok(())
 }
 
@@ -1366,7 +1612,11 @@ mod tests {
             params![account_id, tenant, user, now],
         ).unwrap();
         let category_id: String = conn
-            .query_row("SELECT id FROM categories WHERE tenant_id = ?1 AND name = 'Groceries'", [&tenant], |r| r.get(0))
+            .query_row(
+                "SELECT id FROM categories WHERE tenant_id = ?1 AND name = 'Groceries'",
+                [&tenant],
+                |r| r.get(0),
+            )
             .unwrap();
         (conn, tenant, user, account_id, category_id)
     }
@@ -1399,15 +1649,19 @@ mod tests {
     #[test]
     fn posting_an_expense_creates_balanced_entries() {
         let (conn, tenant, user, account, category) = setup();
-        let result = create_transaction(&conn, &tenant, &user, &input(&account, &category, "250.00")).unwrap();
-        let (debits, credits): (i64, i64) = conn.query_row(
-            "SELECT
+        let result =
+            create_transaction(&conn, &tenant, &user, &input(&account, &category, "250.00"))
+                .unwrap();
+        let (debits, credits): (i64, i64) = conn
+            .query_row(
+                "SELECT
                COALESCE(SUM(CASE WHEN entry_type='debit' THEN base_amount_minor END),0),
                COALESCE(SUM(CASE WHEN entry_type='credit' THEN base_amount_minor END),0)
              FROM ledger_entries WHERE transaction_id = ?1",
-            [&result.id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        ).unwrap();
+                [&result.id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
         assert_eq!(debits, credits);
         assert_eq!(debits, 25000);
     }
@@ -1429,10 +1683,18 @@ mod tests {
     #[test]
     fn reversal_nets_to_zero_and_preserves_history() {
         let (conn, tenant, user, account, category) = setup();
-        let first = create_transaction(&conn, &tenant, &user, &input(&account, &category, "100.00")).unwrap();
+        let first =
+            create_transaction(&conn, &tenant, &user, &input(&account, &category, "100.00"))
+                .unwrap();
         let reversal = reverse_transaction(&conn, &tenant, &user, &first.id).unwrap();
         assert_ne!(reversal, first.id);
-        let original_status: String = conn.query_row("SELECT status FROM transactions WHERE id = ?1", [&first.id], |r| r.get(0)).unwrap();
+        let original_status: String = conn
+            .query_row(
+                "SELECT status FROM transactions WHERE id = ?1",
+                [&first.id],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(original_status, "reversed");
         let sum: i64 = conn.query_row(
             "SELECT COALESCE(SUM(CASE WHEN le.entry_type='debit' THEN le.amount_minor ELSE -le.amount_minor END),0)
@@ -1442,7 +1704,13 @@ mod tests {
             |r| r.get(0),
         ).unwrap();
         assert_eq!(sum, 0);
-        let total_count: i64 = conn.query_row("SELECT count(*) FROM transactions WHERE tenant_id = ?1", [&tenant], |r| r.get(0)).unwrap();
+        let total_count: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM transactions WHERE tenant_id = ?1",
+                [&tenant],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(total_count, 2);
     }
 
@@ -1451,8 +1719,16 @@ mod tests {
         let (conn, tenant, user, account, category) = setup();
         let mut tx = input(&account, &category, "100.00");
         tx.splits = Some(vec![
-            SplitInput { category_id: category.clone(), amount: "60.00".into(), note: None },
-            SplitInput { category_id: category, amount: "30.00".into(), note: None },
+            SplitInput {
+                category_id: category.clone(),
+                amount: "60.00".into(),
+                note: None,
+            },
+            SplitInput {
+                category_id: category,
+                amount: "30.00".into(),
+                note: None,
+            },
         ]);
         let err = create_transaction(&conn, &tenant, &user, &tx).unwrap_err();
         assert!(err.to_string().contains("must add up"));

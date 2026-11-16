@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-
 use chrono::{Datelike, NaiveDate};
 use rusqlite::{params, Connection, OptionalExtension};
 use rust_decimal::{Decimal, RoundingStrategy};
@@ -139,11 +138,7 @@ fn parse_optional_date(value: Option<&str>) -> AppResult<Option<String>> {
     }
 }
 
-fn parse_optional_amount(
-    value: Option<&str>,
-    exponent: u32,
-    label: &str,
-) -> AppResult<i64> {
+fn parse_optional_amount(value: Option<&str>, exponent: u32, label: &str) -> AppResult<i64> {
     match value.map(str::trim).filter(|v| !v.is_empty()) {
         Some(raw) => {
             let parsed = parse_amount(raw, exponent)?;
@@ -161,8 +156,9 @@ fn parse_bps(value: Option<&str>) -> AppResult<i64> {
     match value.map(str::trim).filter(|v| !v.is_empty()) {
         None => Ok(0),
         Some(raw) => {
-            let parsed = crate::money::parse_decimal(raw)
-                .map_err(|_| AppError::Validation(format!("'{raw}' is not a valid interest rate.")))?;
+            let parsed = crate::money::parse_decimal(raw).map_err(|_| {
+                AppError::Validation(format!("'{raw}' is not a valid interest rate."))
+            })?;
             if parsed < Decimal::ZERO {
                 return Err(AppError::Validation(
                     "Interest rate cannot be negative.".into(),
@@ -305,7 +301,16 @@ fn payment_rows(
     Ok(rows
         .into_iter()
         .map(
-            |(id, paid_on, amount_minor, principal_minor, interest_minor, fee_minor, transaction_id, note)| {
+            |(
+                id,
+                paid_on,
+                amount_minor,
+                principal_minor,
+                interest_minor,
+                fee_minor,
+                transaction_id,
+                note,
+            )| {
                 LiabilityPaymentDto {
                     id,
                     paid_on,
@@ -403,15 +408,13 @@ pub fn list_liabilities(conn: &Connection, tenant_id: &str) -> AppResult<Vec<Lia
             Some(day) if status == "active" && outstanding_minor > 0 => {
                 let next = next_due_date(day, today);
                 let cycle = cycle_start(day, today);
-                let paid_this_cycle = payments
-                    .iter()
-                    .any(|p| dates::parse_date(&p.paid_on).map(|d| d >= cycle).unwrap_or(false));
+                let paid_this_cycle = payments.iter().any(|p| {
+                    dates::parse_date(&p.paid_on)
+                        .map(|d| d >= cycle)
+                        .unwrap_or(false)
+                });
                 let overdue = today > cycle && !paid_this_cycle;
-                (
-                    Some(iso(next)),
-                    Some((next - today).num_days()),
-                    overdue,
-                )
+                (Some(iso(next)), Some((next - today).num_days()), overdue)
             }
             _ => (None, None, false),
         };
@@ -421,11 +424,11 @@ pub fn list_liabilities(conn: &Connection, tenant_id: &str) -> AppResult<Vec<Lia
         } else {
             None
         };
-        let estimated_date = estimated_months.and_then(|months| {
+        let estimated_date = estimated_months.map(|months| {
             if months <= 0 {
-                Some(iso(today))
+                iso(today)
             } else {
-                Some(iso(dates::add_months_clamped(today, months as i32)))
+                iso(dates::add_months_clamped(today, months as i32))
             }
         });
 
@@ -563,9 +566,7 @@ pub fn save_liability(
 
     let principal_minor = parse_amount(&input.principal, meta.exponent)?;
     if principal_minor < 0 {
-        return Err(AppError::Validation(
-            "Principal cannot be negative.".into(),
-        ));
+        return Err(AppError::Validation("Principal cannot be negative.".into()));
     }
     let outstanding_minor = parse_amount(&input.outstanding, meta.exponent)?;
     if outstanding_minor < 0 {
@@ -573,11 +574,8 @@ pub fn save_liability(
             "Outstanding balance cannot be negative.".into(),
         ));
     }
-    let payment_minor = parse_optional_amount(
-        input.payment.as_deref(),
-        meta.exponent,
-        "Monthly payment",
-    )?;
+    let payment_minor =
+        parse_optional_amount(input.payment.as_deref(), meta.exponent, "Monthly payment")?;
     let interest_rate_bps = parse_bps(input.interest_rate.as_deref())?;
     let status = input.status.as_deref().unwrap_or("active");
     validate_status(status)?;
@@ -602,12 +600,7 @@ pub fn save_liability(
     }
     let start_date = parse_optional_date(input.start_date.as_deref())?;
     let first_payment_date = parse_optional_date(input.first_payment_date.as_deref())?;
-    validate_account(
-        conn,
-        tenant_id,
-        input.account_id.as_deref(),
-        &currency_code,
-    )?;
+    validate_account(conn, tenant_id, input.account_id.as_deref(), &currency_code)?;
 
     let now = dates::now_iso();
     let liability_id = match id.filter(|v| !v.is_empty()) {
@@ -776,7 +769,24 @@ pub fn save_payment(
             "Principal, interest and fee must add up to the payment amount.".into(),
         ));
     }
-    if principal_minor > outstanding_minor {
+    // When editing, the previously recorded principal is already reflected in
+    // the outstanding balance and is available to be re-used.
+    let previous_principal: i64 = match id.filter(|v| !v.is_empty()) {
+        Some(existing) => {
+            let row: Option<(i64, i64)> = conn
+                .query_row(
+                    "SELECT principal_minor, amount_minor FROM liability_payments
+                     WHERE id = ?1 AND tenant_id = ?2 AND liability_id = ?3",
+                    params![existing, tenant_id, liability_id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
+            row.map(|(principal, _)| principal)
+                .ok_or_else(|| AppError::NotFound("Payment not found.".into()))?
+        }
+        None => 0,
+    };
+    if principal_minor > outstanding_minor + previous_principal {
         return Err(AppError::Validation(format!(
             "The principal portion ({}) is larger than the outstanding balance ({}).",
             format_amount(principal_minor, exp),
@@ -821,8 +831,20 @@ pub fn save_payment(
                 ],
             )?;
             conn.execute(
-                "UPDATE liabilities SET outstanding_minor = ?1, updated_at = ?2 WHERE id = ?3 AND tenant_id = ?4",
-                params![adjusted, now, liability_id, tenant_id],
+                "UPDATE liabilities SET outstanding_minor = ?1, status = ?2, updated_at = ?3 WHERE id = ?4 AND tenant_id = ?5",
+                params![
+                    adjusted,
+                    if adjusted == 0 {
+                        "paid"
+                    } else if status == "paid" {
+                        "active"
+                    } else {
+                        status.as_str()
+                    },
+                    now,
+                    liability_id,
+                    tenant_id
+                ],
             )?;
             existing.to_string()
         }
@@ -846,7 +868,11 @@ pub fn save_payment(
                 ],
             )?;
             let adjusted = outstanding_minor - principal_minor;
-            let next_status = if adjusted == 0 { "paid" } else { status.as_str() };
+            let next_status = if adjusted == 0 {
+                "paid"
+            } else {
+                status.as_str()
+            };
             conn.execute(
                 "UPDATE liabilities SET outstanding_minor = ?1, status = ?2, updated_at = ?3
                  WHERE id = ?4 AND tenant_id = ?5",
@@ -912,7 +938,13 @@ pub fn delete_payment(
     conn.execute(
         "UPDATE liabilities SET outstanding_minor = ?1, status = ?2, updated_at = ?3
          WHERE id = ?4 AND tenant_id = ?5",
-        params![restored, next_status, dates::now_iso(), liability_id, tenant_id],
+        params![
+            restored,
+            next_status,
+            dates::now_iso(),
+            liability_id,
+            tenant_id
+        ],
     )?;
 
     crate::db::audit(
@@ -1005,11 +1037,7 @@ mod tests {
         (conn, tenant, user)
     }
 
-    fn liability_input(
-        liability_type: &str,
-        principal: &str,
-        outstanding: &str,
-    ) -> LiabilityInput {
+    fn liability_input(liability_type: &str, principal: &str, outstanding: &str) -> LiabilityInput {
         LiabilityInput {
             name: "Car loan".into(),
             liability_type: liability_type.into(),
@@ -1105,6 +1133,82 @@ mod tests {
         )
         .unwrap();
 
+        let item = &list_liabilities(&conn, &tenant).unwrap()[0];
+        assert_eq!(item.outstanding_minor, 0);
+        assert_eq!(item.status, "paid");
+    }
+
+    #[test]
+    fn editing_a_payment_keeps_the_status_in_sync() {
+        let (conn, tenant, user) = setup();
+        let liability_id = save_liability(
+            &conn,
+            &tenant,
+            &user,
+            None,
+            &liability_input("loan", "1000.00", "1000.00"),
+        )
+        .unwrap();
+        let payment_id = save_payment(
+            &conn,
+            &tenant,
+            &user,
+            &liability_id,
+            None,
+            &LiabilityPaymentInput {
+                paid_on: "2026-11-01".into(),
+                amount: "1000.00".into(),
+                principal: Some("1000.00".into()),
+                interest: None,
+                fee: None,
+                note: None,
+            },
+        )
+        .unwrap();
+        let item = &list_liabilities(&conn, &tenant).unwrap()[0];
+        assert_eq!(item.status, "paid");
+
+        // Editing the payment down reopens the liability.
+        save_payment(
+            &conn,
+            &tenant,
+            &user,
+            &liability_id,
+            Some(&payment_id),
+            &LiabilityPaymentInput {
+                paid_on: "2026-11-01".into(),
+                amount: "400.00".into(),
+                principal: Some("400.00".into()),
+                interest: None,
+                fee: None,
+                note: None,
+            },
+        )
+        .unwrap();
+        let item = &list_liabilities(&conn, &tenant).unwrap()[0];
+        assert_eq!(item.outstanding_minor, 60_000);
+        assert_eq!(
+            item.status, "active",
+            "a reopened balance must not stay 'paid'"
+        );
+
+        // Editing it back up marks it paid again.
+        save_payment(
+            &conn,
+            &tenant,
+            &user,
+            &liability_id,
+            Some(&payment_id),
+            &LiabilityPaymentInput {
+                paid_on: "2026-11-01".into(),
+                amount: "1000.00".into(),
+                principal: Some("1000.00".into()),
+                interest: None,
+                fee: None,
+                note: None,
+            },
+        )
+        .unwrap();
         let item = &list_liabilities(&conn, &tenant).unwrap()[0];
         assert_eq!(item.outstanding_minor, 0);
         assert_eq!(item.status, "paid");

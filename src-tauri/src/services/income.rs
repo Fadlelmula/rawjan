@@ -11,7 +11,7 @@ use serde::Serialize;
 
 use crate::dates::{self, iso};
 use crate::error::{AppError, AppResult};
-use crate::money::format_amount;
+use crate::money::{checked_diff, checked_sum, format_amount};
 use crate::services::analytics::{category_slices, month_label, monthly_totals, MonthPoint};
 use crate::services::currency::{currency_meta, exponent, primary_currency};
 
@@ -109,12 +109,15 @@ fn percent(part: i64, total: i64) -> i64 {
 /// Only monthly, semimonthly and one-time sources are counted. Weekly,
 /// biweekly and irregular sources have no stored anchor date, so any number
 /// would be a guess and is therefore withheld.
+///
+/// `received_by_end` is the number of linked receipts dated on or before the
+/// end of the reporting range. Future receipts never change a historical range.
 fn expected_occurrences(
     schedule: &str,
     pay_day: Option<i64>,
     start: NaiveDate,
     end: NaiveDate,
-    received_all_time: i64,
+    received_by_end: i64,
 ) -> Option<i64> {
     match schedule {
         "monthly" => {
@@ -122,7 +125,8 @@ fn expected_occurrences(
             for (month_start, _) in dates::each_month(start, end) {
                 match pay_day {
                     Some(day) => {
-                        let pay = dates::clamp_day(month_start.year(), month_start.month(), day as u32);
+                        let pay =
+                            dates::clamp_day(month_start.year(), month_start.month(), day as u32);
                         if pay >= start && pay <= end {
                             count += 1;
                         }
@@ -132,8 +136,31 @@ fn expected_occurrences(
             }
             Some(count)
         }
-        "semimonthly" => Some(dates::each_month(start, end).len() as i64 * 2),
-        "one_time" => Some(if received_all_time > 0 { 0 } else { 1 }),
+        "semimonthly" => {
+            // Twice monthly: the pay day and half a month later, both clamped
+            // to the month end. Every occurrence is checked against the range,
+            // so a partial month counts only the payouts it actually contains.
+            // When both dates collapse onto the same day (e.g. day 31 in a
+            // 30-day month) the month has only one such payout.
+            let day = pay_day?.clamp(1, 31) as u32;
+            let mut count = 0i64;
+            for (month_start, _) in dates::each_month(start, end) {
+                let first = dates::clamp_day(month_start.year(), month_start.month(), day);
+                let second =
+                    dates::clamp_day(month_start.year(), month_start.month(), (day + 15).min(31));
+                for pay in if second == first {
+                    vec![first]
+                } else {
+                    vec![first, second]
+                } {
+                    if pay >= start && pay <= end {
+                        count += 1;
+                    }
+                }
+            }
+            Some(count)
+        }
+        "one_time" => Some(if received_by_end > 0 { 0 } else { 1 }),
         _ => None,
     }
 }
@@ -226,7 +253,8 @@ fn source_rows(
                 (SELECT COUNT(*) FROM transactions t
                    WHERE t.income_source_id = s.id AND t.tenant_id = s.tenant_id
                      AND t.kind IN ('income','dividend')
-                     AND t.status IN ('posted','reconciled') AND t.reversal_of_id IS NULL),
+                     AND t.status IN ('posted','reconciled') AND t.reversal_of_id IS NULL
+                     AND t.local_date <= ?3),
                 s.notes
          FROM income_sources s
          LEFT JOIN accounts a ON a.id = s.account_id
@@ -242,7 +270,7 @@ fn source_rows(
         let received_minor: i64 = row.get(12)?;
         let transaction_count: i64 = row.get(13)?;
         let last_received_date: Option<String> = row.get(14)?;
-        let received_all_time: i64 = row.get(15)?;
+        let received_by_end: i64 = row.get(15)?;
         let source_exp = exponent(conn, &currency).unwrap_or(2);
 
         let occurrences = expected_occurrences(
@@ -250,7 +278,7 @@ fn source_rows(
             pay_day,
             start_date,
             end_date,
-            received_all_time,
+            received_by_end,
         );
         let (expected_minor, estimate_note) = if currency != base {
             (
@@ -273,6 +301,13 @@ fn source_rows(
                 Some(_) => (
                     None,
                     Some("No expected amount is saved for this source.".to_string()),
+                ),
+                None if schedule == "semimonthly" => (
+                    None,
+                    Some(
+                        "Twice-monthly payouts need a pay day before they can be placed in this range. Recorded amounts are shown exactly."
+                            .to_string(),
+                    ),
                 ),
                 None => (
                     None,
@@ -387,8 +422,10 @@ pub fn income_report(
         let entry = totals.get(&key);
         let income = entry.map(|value| value.income).unwrap_or(0);
         let expense = entry.map(|value| value.expense).unwrap_or(0);
-        let count = entry.map(|value| value.count).unwrap_or(0);
-        let net = income - expense;
+        let income_count = entry.map(|value| value.income_count).unwrap_or(0);
+        let expense_count = entry.map(|value| value.expense_count).unwrap_or(0);
+        let general_count = entry.map(|value| value.general_count).unwrap_or(0);
+        let net = checked_diff(income, expense)?;
         months.push(MonthPoint {
             month: key.clone(),
             label: month_label(&key),
@@ -398,14 +435,20 @@ pub fn income_report(
             expense: format_amount(expense, meta.exponent),
             net_minor: net,
             net: format_amount(net, meta.exponent),
-            transaction_count: count,
+            income_count,
+            expense_count,
+            general_count,
+            transaction_count: income_count + expense_count + general_count,
         });
     }
 
-    let income_total: i64 = months.iter().map(|month| month.income_minor).sum();
-    let expense_total: i64 = months.iter().map(|month| month.expense_minor).sum();
-    let net_total = income_total - expense_total;
-    let transaction_count: i64 = months.iter().map(|month| month.transaction_count).sum();
+    let income_total = checked_sum(months.iter().map(|month| month.income_minor))?;
+    let expense_total = checked_sum(months.iter().map(|month| month.expense_minor))?;
+    let net_total = checked_diff(income_total, expense_total)?;
+    // The headline count is income entries only: effective income and dividend
+    // rows. Expenses and internal movements are counted separately and must
+    // never inflate an "income entries" figure.
+    let transaction_count: i64 = months.iter().map(|month| month.income_count).sum();
     let month_count = months.len().max(1) as i64;
     let average_monthly = income_total / month_count;
     let savings_rate = if income_total > 0 {
@@ -415,12 +458,8 @@ pub fn income_report(
     };
 
     let (previous_start, previous_end) = previous_range(start, end);
-    let (previous_income, _) = period_income(
-        conn,
-        tenant_id,
-        &iso(previous_start),
-        &iso(previous_end),
-    )?;
+    let (previous_income, _) =
+        period_income(conn, tenant_id, &iso(previous_start), &iso(previous_end))?;
     let change_percent = if previous_income > 0 {
         Some(
             (((income_total as i128 - previous_income as i128) * 100) / previous_income as i128)
@@ -566,13 +605,7 @@ mod tests {
         id
     }
 
-    fn income(
-        f: &Fixture,
-        amount: &str,
-        date: &str,
-        source_id: Option<&str>,
-        status: &str,
-    ) {
+    fn income(f: &Fixture, amount: &str, date: &str, source_id: Option<&str>, status: &str) {
         create_transaction(
             &f.conn,
             &f.tenant,
@@ -662,7 +695,8 @@ mod tests {
         income(&f, "500.00", "2026-11-15", Some(&salary), "pending");
         expense(&f, "200.00", "2026-11-05");
 
-        let report = income_report(&f.conn, &f.tenant, Some("2026-11-01"), Some("2026-11-30")).unwrap();
+        let report =
+            income_report(&f.conn, &f.tenant, Some("2026-11-01"), Some("2026-11-30")).unwrap();
         assert_eq!(report.summary.income_minor, 90_000);
         assert_eq!(report.summary.expense_minor, 20_000);
         assert_eq!(report.summary.net_minor, 70_000);
@@ -686,7 +720,8 @@ mod tests {
         let salary = source(&f, "Salary", "QAR", "1000.00", "monthly", Some(1));
         income(&f, "900.00", "2026-11-01", Some(&salary), "posted");
 
-        let report = income_report(&f.conn, &f.tenant, Some("2026-11-01"), Some("2026-11-30")).unwrap();
+        let report =
+            income_report(&f.conn, &f.tenant, Some("2026-11-01"), Some("2026-11-30")).unwrap();
         let row = &report.sources[0];
         assert_eq!(row.occurrences, Some(1));
         assert_eq!(row.expected_minor, Some(100_000));
@@ -702,7 +737,8 @@ mod tests {
         let f = setup();
         source(&f, "Salary", "QAR", "1000.00", "monthly", Some(1));
 
-        let report = income_report(&f.conn, &f.tenant, Some("2026-11-15"), Some("2026-11-30")).unwrap();
+        let report =
+            income_report(&f.conn, &f.tenant, Some("2026-11-15"), Some("2026-11-30")).unwrap();
         let row = &report.sources[0];
         assert_eq!(row.occurrences, Some(0));
         assert_eq!(row.expected_minor, Some(0));
@@ -715,7 +751,8 @@ mod tests {
         let f = setup();
         income(&f, "300.00", "2026-11-10", None, "posted");
 
-        let report = income_report(&f.conn, &f.tenant, Some("2026-11-01"), Some("2026-11-30")).unwrap();
+        let report =
+            income_report(&f.conn, &f.tenant, Some("2026-11-01"), Some("2026-11-30")).unwrap();
         assert_eq!(report.summary.income_minor, 30_000);
         assert_eq!(report.summary.unassigned_minor, 30_000);
         assert_eq!(report.summary.unassigned_count, 1);
@@ -727,13 +764,18 @@ mod tests {
         let f = setup();
         source(&f, "US client", "USD", "500.00", "monthly", Some(5));
 
-        let report = income_report(&f.conn, &f.tenant, Some("2026-11-01"), Some("2026-11-30")).unwrap();
+        let report =
+            income_report(&f.conn, &f.tenant, Some("2026-11-01"), Some("2026-11-30")).unwrap();
         let row = &report.sources[0];
         assert_eq!(row.currency, "USD");
         assert_eq!(row.expected_amount_minor, 50_000);
         assert_eq!(row.expected_minor, None);
         assert_eq!(row.variance_minor, None);
-        assert!(row.estimate_note.as_deref().unwrap().contains("not converted"));
+        assert!(row
+            .estimate_note
+            .as_deref()
+            .unwrap()
+            .contains("not converted"));
     }
 
     #[test]
@@ -742,7 +784,8 @@ mod tests {
         let weekly = source(&f, "Weekly rent", "QAR", "100.00", "weekly", None);
         income(&f, "100.00", "2026-11-03", Some(&weekly), "posted");
 
-        let report = income_report(&f.conn, &f.tenant, Some("2026-11-01"), Some("2026-11-30")).unwrap();
+        let report =
+            income_report(&f.conn, &f.tenant, Some("2026-11-01"), Some("2026-11-30")).unwrap();
         let row = &report.sources[0];
         assert_eq!(row.occurrences, None);
         assert_eq!(row.expected_minor, None);
@@ -756,13 +799,15 @@ mod tests {
         let f = setup();
         let bonus = source(&f, "Annual bonus", "QAR", "5000.00", "one_time", None);
 
-        let before = income_report(&f.conn, &f.tenant, Some("2026-11-01"), Some("2026-11-30")).unwrap();
+        let before =
+            income_report(&f.conn, &f.tenant, Some("2026-11-01"), Some("2026-11-30")).unwrap();
         assert_eq!(before.sources[0].occurrences, Some(1));
         assert_eq!(before.sources[0].expected_minor, Some(500_000));
         assert_eq!(before.sources[0].variance_minor, Some(-500_000));
 
         income(&f, "5000.00", "2026-11-20", Some(&bonus), "posted");
-        let after = income_report(&f.conn, &f.tenant, Some("2026-11-01"), Some("2026-11-30")).unwrap();
+        let after =
+            income_report(&f.conn, &f.tenant, Some("2026-11-01"), Some("2026-11-30")).unwrap();
         assert_eq!(after.sources[0].occurrences, Some(0));
         assert_eq!(after.sources[0].expected_minor, Some(0));
         assert_eq!(after.sources[0].variance_minor, None);
@@ -784,7 +829,8 @@ mod tests {
             .unwrap();
         crate::services::tx::reverse_transaction(&f.conn, &f.tenant, &f.user, &id).unwrap();
 
-        let report = income_report(&f.conn, &f.tenant, Some("2026-11-01"), Some("2026-11-30")).unwrap();
+        let report =
+            income_report(&f.conn, &f.tenant, Some("2026-11-01"), Some("2026-11-30")).unwrap();
         assert_eq!(report.summary.income_minor, 0);
         assert_eq!(report.sources[0].received_minor, 0);
     }
@@ -793,5 +839,178 @@ mod tests {
     fn an_inverted_range_is_rejected() {
         let f = setup();
         assert!(income_report(&f.conn, &f.tenant, Some("2026-12-01"), Some("2026-11-01")).is_err());
+    }
+
+    fn opening(f: &Fixture, amount: &str, date: &str) {
+        create_transaction(
+            &f.conn,
+            &f.tenant,
+            &f.user,
+            &TxInput {
+                kind: "opening".into(),
+                status: Some("posted".into()),
+                data_status: None,
+                description: "Opening entry".into(),
+                payee: None,
+                notes: None,
+                date: date.into(),
+                time: None,
+                account_id: f.account.clone(),
+                counter_account_id: None,
+                category_id: None,
+                income_source_id: None,
+                amount: amount.into(),
+                currency: None,
+                counter_amount: None,
+                fx_rate: None,
+                splits: None,
+                tags: None,
+                external_ref: None,
+                direction: Some("in".into()),
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn income_counts_exclude_expense_and_general_rows() {
+        let f = setup();
+        income(&f, "1000.00", "2026-11-03", None, "posted");
+        create_transaction(
+            &f.conn,
+            &f.tenant,
+            &f.user,
+            &TxInput {
+                kind: "dividend".into(),
+                status: Some("posted".into()),
+                data_status: None,
+                description: "Dividend".into(),
+                payee: None,
+                notes: None,
+                date: "2026-11-04".into(),
+                time: None,
+                account_id: f.account.clone(),
+                counter_account_id: None,
+                category_id: Some(f.income_category.clone()),
+                income_source_id: None,
+                amount: "500.00".into(),
+                currency: None,
+                counter_amount: None,
+                fx_rate: None,
+                splits: None,
+                tags: None,
+                external_ref: None,
+                direction: None,
+            },
+        )
+        .unwrap();
+        expense(&f, "250.00", "2026-11-05");
+        opening(&f, "400.00", "2026-11-06");
+
+        let report =
+            income_report(&f.conn, &f.tenant, Some("2026-11-01"), Some("2026-11-30")).unwrap();
+        assert_eq!(
+            report.summary.transaction_count, 2,
+            "income and dividend rows count as income; expenses and openings do not"
+        );
+        assert_eq!(report.months[0].income_count, 2);
+        assert_eq!(report.months[0].expense_count, 1);
+        assert_eq!(report.months[0].general_count, 1);
+    }
+
+    #[test]
+    fn semimonthly_payouts_count_only_days_that_fall_in_the_range() {
+        let f = setup();
+        source(&f, "Wages", "QAR", "1000.00", "semimonthly", Some(15));
+
+        let full =
+            income_report(&f.conn, &f.tenant, Some("2026-11-01"), Some("2026-11-30")).unwrap();
+        // Nov 15 and Nov 30 both fall inside.
+        assert_eq!(full.sources[0].occurrences, Some(2));
+        assert_eq!(full.sources[0].expected_minor, Some(200_000));
+
+        let tail =
+            income_report(&f.conn, &f.tenant, Some("2026-11-16"), Some("2026-11-30")).unwrap();
+        // Only Nov 30: a partial month must not count two payouts.
+        assert_eq!(tail.sources[0].occurrences, Some(1));
+        assert_eq!(tail.sources[0].expected_minor, Some(100_000));
+
+        let head =
+            income_report(&f.conn, &f.tenant, Some("2026-11-01"), Some("2026-11-14")).unwrap();
+        assert_eq!(head.sources[0].occurrences, Some(0));
+    }
+
+    #[test]
+    fn semimonthly_without_a_pay_day_is_not_estimated() {
+        let f = setup();
+        source(&f, "Wages", "QAR", "1000.00", "semimonthly", None);
+
+        let report =
+            income_report(&f.conn, &f.tenant, Some("2026-11-01"), Some("2026-11-30")).unwrap();
+        let row = &report.sources[0];
+        assert_eq!(row.occurrences, None);
+        assert_eq!(row.expected_minor, None);
+        assert!(row.estimate_note.as_deref().unwrap().contains("pay day"));
+    }
+
+    #[test]
+    fn a_future_one_time_receipt_does_not_change_historical_ranges() {
+        let f = setup();
+        let bonus = source(&f, "Bonus", "QAR", "5000.00", "one_time", None);
+        income(&f, "5000.00", "2026-12-20", Some(&bonus), "posted");
+
+        let history =
+            income_report(&f.conn, &f.tenant, Some("2026-11-01"), Some("2026-11-30")).unwrap();
+        assert_eq!(history.sources[0].occurrences, Some(1));
+        assert_eq!(history.sources[0].expected_minor, Some(500_000));
+
+        let later =
+            income_report(&f.conn, &f.tenant, Some("2026-12-01"), Some("2026-12-31")).unwrap();
+        assert_eq!(later.sources[0].occurrences, Some(0));
+        assert_eq!(later.sources[0].received_minor, 500_000);
+    }
+
+    #[test]
+    fn monthly_pay_day_31_clamps_to_the_end_of_shorter_months() {
+        let f = setup();
+        source(&f, "Salary", "QAR", "1000.00", "monthly", Some(31));
+
+        let leap =
+            income_report(&f.conn, &f.tenant, Some("2028-02-01"), Some("2028-02-29")).unwrap();
+        assert_eq!(
+            leap.sources[0].occurrences,
+            Some(1),
+            "clamped to 29 Feb 2028"
+        );
+
+        let non_leap =
+            income_report(&f.conn, &f.tenant, Some("2027-02-01"), Some("2027-02-28")).unwrap();
+        assert_eq!(
+            non_leap.sources[0].occurrences,
+            Some(1),
+            "clamped to 28 Feb 2027"
+        );
+
+        let thirty_day =
+            income_report(&f.conn, &f.tenant, Some("2027-04-01"), Some("2027-04-30")).unwrap();
+        assert_eq!(
+            thirty_day.sources[0].occurrences,
+            Some(1),
+            "clamped to 30 Apr"
+        );
+    }
+
+    #[test]
+    fn empty_ranges_report_zeros_without_dividing_by_zero() {
+        let f = setup();
+        let report =
+            income_report(&f.conn, &f.tenant, Some("2026-11-01"), Some("2026-11-30")).unwrap();
+        assert_eq!(report.summary.income_minor, 0);
+        assert_eq!(report.summary.expense_minor, 0);
+        assert_eq!(report.summary.savings_rate, None);
+        assert_eq!(report.summary.average_monthly_minor, 0);
+        assert_eq!(report.summary.change_percent, None);
+        assert_eq!(report.summary.transaction_count, 0);
+        assert!(report.sources.is_empty());
     }
 }

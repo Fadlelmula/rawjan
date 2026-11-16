@@ -6,7 +6,7 @@ use serde::Serialize;
 
 use crate::dates::{self, iso};
 use crate::error::AppResult;
-use crate::money::format_amount;
+use crate::money::{checked_diff, checked_sum, format_amount};
 use crate::services::currency::{currency_meta, exponent, primary_currency};
 
 #[derive(Debug, Clone, Serialize)]
@@ -36,6 +36,14 @@ pub struct MonthPoint {
     pub expense: String,
     pub net_minor: i64,
     pub net: String,
+    /// Effective income and dividend entries only.
+    pub income_count: i64,
+    /// Effective expense, fee and refund entries only.
+    pub expense_count: i64,
+    /// Effective entries that are neither income nor spending: transfers,
+    /// investment moves, openings and adjustments.
+    pub general_count: i64,
+    /// All effective entries in the month (`income_count + expense_count + general_count`).
     pub transaction_count: i64,
 }
 
@@ -77,7 +85,9 @@ pub struct AnalyticsReport {
 pub(crate) struct MonthTotals {
     pub(crate) income: i64,
     pub(crate) expense: i64,
-    pub(crate) count: i64,
+    pub(crate) income_count: i64,
+    pub(crate) expense_count: i64,
+    pub(crate) general_count: i64,
 }
 
 pub(crate) fn month_label(month: &str) -> String {
@@ -94,6 +104,8 @@ fn percent(part: i64, total: i64) -> i64 {
     ((part.max(0) as i128 * 100) / total as i128) as i64
 }
 
+const CATEGORY_DISPLAY_LIMIT: usize = 12;
+
 /// Income and expense for each month. Only effective, non-reversed records count.
 /// Transfers, investment moves, openings and adjustments are excluded: they move
 /// value between accounts rather than describing income or spending.
@@ -108,7 +120,9 @@ pub(crate) fn monthly_totals(
                 SUM(CASE WHEN t.kind IN ('income','dividend') THEN t.base_amount_minor ELSE 0 END) AS income,
                 SUM(CASE WHEN t.kind IN ('expense','fee') THEN t.base_amount_minor
                          WHEN t.kind = 'refund' THEN -t.base_amount_minor ELSE 0 END) AS expense,
-                COUNT(*) AS count
+                SUM(CASE WHEN t.kind IN ('income','dividend') THEN 1 ELSE 0 END) AS income_count,
+                SUM(CASE WHEN t.kind IN ('expense','fee','refund') THEN 1 ELSE 0 END) AS expense_count,
+                SUM(CASE WHEN t.kind NOT IN ('income','dividend','expense','fee','refund') THEN 1 ELSE 0 END) AS general_count
          FROM transactions t
          WHERE t.tenant_id = ?1
            AND t.status IN ('posted','reconciled')
@@ -123,7 +137,9 @@ pub(crate) fn monthly_totals(
             MonthTotals {
                 income: row.get(1)?,
                 expense: row.get(2)?,
-                count: row.get(3)?,
+                income_count: row.get(3)?,
+                expense_count: row.get(4)?,
+                general_count: row.get(5)?,
             },
         ))
     })?;
@@ -159,8 +175,7 @@ pub(crate) fn category_slices(
            AND t.local_date BETWEEN ?2 AND ?3
          GROUP BY c.id
          HAVING amount <> 0
-         ORDER BY amount DESC
-         LIMIT 12",
+         ORDER BY amount DESC",
     )?;
     let rows = stmt.query_map(params![tenant_id, start, end, kind], |row| {
         Ok((
@@ -172,19 +187,24 @@ pub(crate) fn category_slices(
         ))
     })?;
     let collected = rows.collect::<Result<Vec<_>, _>>()?;
+    // Percentages must describe every eligible category, not only the displayed
+    // slice, so the total is taken before the row limit is applied.
     let total: i64 = collected.iter().map(|(_, _, _, amount, _)| *amount).sum();
     let exp = exponent(conn, &primary_currency(conn, tenant_id)?)?;
     Ok(collected
         .into_iter()
-        .map(|(category_id, name, color, amount, tx_count)| CategorySlice {
-            category_id,
-            name,
-            color,
-            amount_minor: amount,
-            amount: format_amount(amount, exp),
-            percent: percent(amount, total),
-            transaction_count: tx_count,
-        })
+        .take(CATEGORY_DISPLAY_LIMIT)
+        .map(
+            |(category_id, name, color, amount, tx_count)| CategorySlice {
+                category_id,
+                name,
+                color,
+                amount_minor: amount,
+                amount: format_amount(amount, exp),
+                percent: percent(amount, total),
+                transaction_count: tx_count,
+            },
+        )
         .collect())
 }
 
@@ -263,8 +283,10 @@ pub fn analytics(
         let entry = totals.get(&key);
         let income = entry.map(|value| value.income).unwrap_or(0);
         let expense = entry.map(|value| value.expense).unwrap_or(0);
-        let count = entry.map(|value| value.count).unwrap_or(0);
-        let net = income - expense;
+        let income_count = entry.map(|value| value.income_count).unwrap_or(0);
+        let expense_count = entry.map(|value| value.expense_count).unwrap_or(0);
+        let general_count = entry.map(|value| value.general_count).unwrap_or(0);
+        let net = checked_diff(income, expense)?;
         months.push(MonthPoint {
             month: key.clone(),
             label: month_label(&key),
@@ -274,13 +296,16 @@ pub fn analytics(
             expense: format_amount(expense, meta.exponent),
             net_minor: net,
             net: format_amount(net, meta.exponent),
-            transaction_count: count,
+            income_count,
+            expense_count,
+            general_count,
+            transaction_count: income_count + expense_count + general_count,
         });
     }
 
-    let income_total: i64 = months.iter().map(|month| month.income_minor).sum();
-    let expense_total: i64 = months.iter().map(|month| month.expense_minor).sum();
-    let net_total = income_total - expense_total;
+    let income_total = checked_sum(months.iter().map(|month| month.income_minor))?;
+    let expense_total = checked_sum(months.iter().map(|month| month.expense_minor))?;
+    let net_total = checked_diff(income_total, expense_total)?;
     let transaction_count: i64 = months.iter().map(|month| month.transaction_count).sum();
     let month_count = months.len().max(1) as i64;
     let average_expense = expense_total / month_count;
@@ -346,7 +371,14 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        (conn, tenant, user, account_id, expense_category, income_category)
+        (
+            conn,
+            tenant,
+            user,
+            account_id,
+            expense_category,
+            income_category,
+        )
     }
 
     fn tx(
@@ -389,28 +421,60 @@ mod tests {
             &conn,
             &tenant,
             &user,
-            &tx("income", &account, &income_category, "1000.00", "posted", "2026-10-05", None),
+            &tx(
+                "income",
+                &account,
+                &income_category,
+                "1000.00",
+                "posted",
+                "2026-10-05",
+                None,
+            ),
         )
         .unwrap();
         create_transaction(
             &conn,
             &tenant,
             &user,
-            &tx("expense", &account, &expense_category, "250.00", "posted", "2026-10-06", Some("Market")),
+            &tx(
+                "expense",
+                &account,
+                &expense_category,
+                "250.00",
+                "posted",
+                "2026-10-06",
+                Some("Market"),
+            ),
         )
         .unwrap();
         create_transaction(
             &conn,
             &tenant,
             &user,
-            &tx("expense", &account, &expense_category, "75.00", "pending", "2026-10-07", Some("Market")),
+            &tx(
+                "expense",
+                &account,
+                &expense_category,
+                "75.00",
+                "pending",
+                "2026-10-07",
+                Some("Market"),
+            ),
         )
         .unwrap();
         create_transaction(
             &conn,
             &tenant,
             &user,
-            &tx("expense", &account, &expense_category, "40.00", "posted", "2026-11-03", Some("Bakery")),
+            &tx(
+                "expense",
+                &account,
+                &expense_category,
+                "40.00",
+                "posted",
+                "2026-11-03",
+                Some("Bakery"),
+            ),
         )
         .unwrap();
 
@@ -432,14 +496,30 @@ mod tests {
             &conn,
             &tenant,
             &user,
-            &tx("expense", &account, &expense_category, "120.00", "posted", "2026-11-02", Some("Shop")),
+            &tx(
+                "expense",
+                &account,
+                &expense_category,
+                "120.00",
+                "posted",
+                "2026-11-02",
+                Some("Shop"),
+            ),
         )
         .unwrap();
         create_transaction(
             &conn,
             &tenant,
             &user,
-            &tx("refund", &account, &expense_category, "20.00", "posted", "2026-11-04", Some("Shop")),
+            &tx(
+                "refund",
+                &account,
+                &expense_category,
+                "20.00",
+                "posted",
+                "2026-11-04",
+                Some("Shop"),
+            ),
         )
         .unwrap();
 
@@ -457,21 +537,45 @@ mod tests {
             &conn,
             &tenant,
             &user,
-            &tx("expense", &account, &expense_category, "30.00", "posted", "2026-11-02", Some("Cafe")),
+            &tx(
+                "expense",
+                &account,
+                &expense_category,
+                "30.00",
+                "posted",
+                "2026-11-02",
+                Some("Cafe"),
+            ),
         )
         .unwrap();
         create_transaction(
             &conn,
             &tenant,
             &user,
-            &tx("expense", &account, &expense_category, "45.00", "posted", "2026-11-09", Some("Cafe")),
+            &tx(
+                "expense",
+                &account,
+                &expense_category,
+                "45.00",
+                "posted",
+                "2026-11-09",
+                Some("Cafe"),
+            ),
         )
         .unwrap();
         create_transaction(
             &conn,
             &tenant,
             &user,
-            &tx("expense", &account, &expense_category, "10.00", "pending", "2026-11-09", Some("Cafe")),
+            &tx(
+                "expense",
+                &account,
+                &expense_category,
+                "10.00",
+                "pending",
+                "2026-11-09",
+                Some("Cafe"),
+            ),
         )
         .unwrap();
 
@@ -486,5 +590,218 @@ mod tests {
     fn an_inverted_range_is_rejected() {
         let (conn, tenant, _, _, _, _) = setup();
         assert!(analytics(&conn, &tenant, Some("2026-12-01"), Some("2026-11-01")).is_err());
+    }
+
+    fn insert_expense_category(conn: &Connection, tenant: &str, user: &str, name: &str) -> String {
+        let id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO categories (id, tenant_id, user_id, parent_id, name, kind, icon, color, is_system, is_archived, sort_order, created_at)
+             VALUES (?1, ?2, ?3, NULL, ?4, 'expense', NULL, NULL, 0, 0, 0, ?5)",
+            params![id, tenant, user, name, dates::now_iso()],
+        )
+        .unwrap();
+        id
+    }
+
+    #[test]
+    fn activity_counts_are_separated_by_kind() {
+        let (conn, tenant, user, account, expense_category, income_category) = setup();
+        create_transaction(
+            &conn,
+            &tenant,
+            &user,
+            &tx(
+                "income",
+                &account,
+                &income_category,
+                "1000.00",
+                "posted",
+                "2026-11-05",
+                None,
+            ),
+        )
+        .unwrap();
+        create_transaction(
+            &conn,
+            &tenant,
+            &user,
+            &tx(
+                "expense",
+                &account,
+                &expense_category,
+                "100.00",
+                "posted",
+                "2026-11-06",
+                Some("Market"),
+            ),
+        )
+        .unwrap();
+        create_transaction(
+            &conn,
+            &tenant,
+            &user,
+            &tx(
+                "expense",
+                &account,
+                &expense_category,
+                "100.00",
+                "pending",
+                "2026-11-06",
+                Some("Market"),
+            ),
+        )
+        .unwrap();
+        let mut opening = tx(
+            "opening",
+            &account,
+            &expense_category,
+            "500.00",
+            "posted",
+            "2026-11-07",
+            None,
+        );
+        opening.category_id = None;
+        opening.direction = Some("in".into());
+        create_transaction(&conn, &tenant, &user, &opening).unwrap();
+
+        let report = analytics(&conn, &tenant, Some("2026-11-01"), Some("2026-11-30")).unwrap();
+        let month = &report.months[0];
+        assert_eq!(month.income_count, 1);
+        assert_eq!(month.expense_count, 1, "pending rows must not count");
+        assert_eq!(month.general_count, 1, "openings count as general activity");
+        assert_eq!(month.transaction_count, 3);
+        assert_eq!(report.summary.transaction_count, 3);
+        assert_eq!(
+            report.summary.income_minor, 100_000,
+            "openings are not income"
+        );
+    }
+
+    #[test]
+    fn category_percentages_use_the_complete_total_before_limiting() {
+        let (conn, tenant, user, account, _, _) = setup();
+        for index in 0..13 {
+            let category = insert_expense_category(&conn, &tenant, &user, &format!("Cat {index}"));
+            create_transaction(
+                &conn,
+                &tenant,
+                &user,
+                &tx(
+                    "expense",
+                    &account,
+                    &category,
+                    "10.00",
+                    "posted",
+                    "2026-11-10",
+                    Some("Shop"),
+                ),
+            )
+            .unwrap();
+        }
+
+        let report = analytics(&conn, &tenant, Some("2026-11-01"), Some("2026-11-30")).unwrap();
+        assert_eq!(
+            report.expense_categories.len(),
+            12,
+            "only the top rows are shown"
+        );
+        // Each 10.00 share is 1000/13000 of the complete total -> 7%.
+        // Over the displayed rows alone it would incorrectly read 8%.
+        for slice in &report.expense_categories {
+            assert_eq!(slice.percent, 7);
+            assert_eq!(slice.amount_minor, 1_000);
+        }
+    }
+
+    #[test]
+    fn reversed_and_draft_rows_never_count() {
+        let (conn, tenant, user, account, expense_category, income_category) = setup();
+        create_transaction(
+            &conn,
+            &tenant,
+            &user,
+            &tx(
+                "income",
+                &account,
+                &income_category,
+                "1000.00",
+                "posted",
+                "2026-11-05",
+                None,
+            ),
+        )
+        .unwrap();
+        create_transaction(
+            &conn,
+            &tenant,
+            &user,
+            &tx(
+                "expense",
+                &account,
+                &expense_category,
+                "300.00",
+                "draft",
+                "2026-11-06",
+                Some("Shop"),
+            ),
+        )
+        .unwrap();
+        let id: String = conn
+            .query_row(
+                "SELECT id FROM transactions WHERE tenant_id = ?1 AND kind = 'income'",
+                [&tenant],
+                |r| r.get(0),
+            )
+            .unwrap();
+        crate::services::tx::reverse_transaction(&conn, &tenant, &user, &id).unwrap();
+
+        let report = analytics(&conn, &tenant, Some("2026-11-01"), Some("2026-11-30")).unwrap();
+        assert_eq!(report.summary.income_minor, 0);
+        assert_eq!(report.summary.expense_minor, 0);
+        assert_eq!(report.summary.transaction_count, 0);
+        assert!(report.income_categories.is_empty());
+    }
+
+    #[test]
+    fn empty_datasets_report_zeros_and_no_percentages() {
+        let (conn, tenant, _, _, _, _) = setup();
+        let report = analytics(&conn, &tenant, Some("2026-11-01"), Some("2026-11-30")).unwrap();
+        assert_eq!(report.summary.income_minor, 0);
+        assert_eq!(report.summary.expense_minor, 0);
+        assert_eq!(report.summary.net_minor, 0);
+        assert_eq!(report.summary.savings_rate, None);
+        assert_eq!(report.summary.average_monthly_expense_minor, 0);
+        assert_eq!(report.summary.transaction_count, 0);
+        assert!(report.expense_categories.is_empty());
+        assert!(report.income_categories.is_empty());
+        assert!(report.payees.is_empty());
+        for month in &report.months {
+            assert_eq!(month.income_minor, 0);
+            assert_eq!(month.expense_minor, 0);
+        }
+    }
+
+    #[test]
+    fn percentage_helpers_hold_for_generated_inputs() {
+        // Deterministic property sweep: percentages never divide by zero,
+        // never go negative, and always match the integer formula exactly.
+        let mut state: u64 = 0x243F_6A88_85A3_08D3;
+        let mut next = move || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (state >> 33) as i64
+        };
+        for _ in 0..2_000 {
+            let part = next().abs();
+            let total = next().abs();
+            let value = percent(part, total);
+            if total <= 0 {
+                assert_eq!(value, 0);
+            } else {
+                assert!(value >= 0);
+                assert_eq!(value, ((part as i128 * 100) / total as i128) as i64);
+            }
+        }
     }
 }

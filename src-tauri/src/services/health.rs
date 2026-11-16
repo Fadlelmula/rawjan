@@ -111,7 +111,10 @@ pub fn health_report(conn: &Connection, tenant_id: &str) -> AppResult<HealthRepo
         .iter()
         .filter(|budget| budget.allocated_minor > 0 && budget.percent_used <= 100)
         .count() as i64;
-    let budget_count = active_budgets.iter().filter(|budget| budget.allocated_minor > 0).count() as i64;
+    let budget_count = active_budgets
+        .iter()
+        .filter(|budget| budget.allocated_minor > 0)
+        .count() as i64;
 
     let emergency_months = if average_expense > 0 {
         Some((worth.cash_minor.max(0) as f64) / (average_expense as f64))
@@ -119,12 +122,18 @@ pub fn health_report(conn: &Connection, tenant_id: &str) -> AppResult<HealthRepo
         None
     };
     let debt_ratio = if worth.assets_minor > 0 {
-        Some(((worth.liabilities_minor.max(0) as f64) / (worth.assets_minor as f64) * 100.0).round() as i64)
+        Some(
+            ((worth.liabilities_minor.max(0) as f64) / (worth.assets_minor as f64) * 100.0).round()
+                as i64,
+        )
     } else {
         None
     };
     let invested_share = if worth.assets_minor > 0 {
-        Some(((worth.invested_minor.max(0) as f64) / (worth.assets_minor as f64) * 100.0).round() as i64)
+        Some(
+            ((worth.invested_minor.max(0) as f64) / (worth.assets_minor as f64) * 100.0).round()
+                as i64,
+        )
     } else {
         None
     };
@@ -179,10 +188,13 @@ pub fn health_report(conn: &Connection, tenant_id: &str) -> AppResult<HealthRepo
         key: "debt_load".into(),
         label: "Debt load".into(),
         weight: 20,
-        score: debt_ratio.map(|ratio| clamp_score(((50 - ratio) as f64 / 50.0 * 100.0).round() as i64)),
+        score: debt_ratio
+            .map(|ratio| clamp_score(((50 - ratio) as f64 / 50.0 * 100.0).round() as i64)),
         available: debt_ratio.is_some(),
         detail: match debt_ratio {
-            Some(ratio) => format!("Liabilities equal {ratio}% of assets. Zero debt scores full marks."),
+            Some(ratio) => {
+                format!("Liabilities equal {ratio}% of assets. Zero debt scores full marks.")
+            }
             None => "No positive asset total exists yet, so a debt ratio cannot be formed.".into(),
         },
         metric: debt_ratio.map(|ratio| format!("{ratio}%")),
@@ -192,11 +204,16 @@ pub fn health_report(conn: &Connection, tenant_id: &str) -> AppResult<HealthRepo
         key: "investing".into(),
         label: "Invested share".into(),
         weight: 15,
-        score: invested_share.map(|share| clamp_score((share as f64 / 40.0 * 100.0).round() as i64)),
+        score: invested_share
+            .map(|share| clamp_score((share as f64 / 40.0 * 100.0).round() as i64)),
         available: invested_share.is_some(),
         detail: match invested_share {
-            Some(share) => format!("Investments are {share}% of assets. Forty percent or more scores full marks."),
-            None => "No positive asset total exists yet, so an invested share cannot be formed.".into(),
+            Some(share) => format!(
+                "Investments are {share}% of assets. Forty percent or more scores full marks."
+            ),
+            None => {
+                "No positive asset total exists yet, so an invested share cannot be formed.".into()
+            }
         },
         metric: invested_share.map(|share| format!("{share}%")),
     });
@@ -229,15 +246,16 @@ pub fn health_report(conn: &Connection, tenant_id: &str) -> AppResult<HealthRepo
         key: "net_worth_trend".into(),
         label: "Net worth trend".into(),
         weight: 10,
-        score: net_worth_trend.map(|trend| {
-            clamp_score(((trend + 5) as f64 / 20.0 * 100.0).round() as i64)
-        }),
+        score: net_worth_trend
+            .map(|trend| clamp_score(((trend + 5) as f64 / 20.0 * 100.0).round() as i64)),
         available: net_worth_trend.is_some(),
         detail: match net_worth_trend {
             Some(trend) => format!(
                 "Net worth changed {trend}% since the earliest snapshot at least 30 days old."
             ),
-            None => "At least two snapshots 30 days apart in the current currency are needed.".into(),
+            None => {
+                "At least two snapshots 30 days apart in the current currency are needed.".into()
+            }
         },
         metric: net_worth_trend.map(|trend| format!("{trend}%")),
     });
@@ -347,10 +365,40 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        create_transaction(&conn, &tenant, &user, &tx("income", &account, &income_category, "9000.00", "2026-08-05")).unwrap();
-        create_transaction(&conn, &tenant, &user, &tx("expense", &account, &category, "3000.00", "2026-08-10")).unwrap();
-        create_transaction(&conn, &tenant, &user, &tx("expense", &account, &category, "3000.00", "2026-09-10")).unwrap();
-        create_transaction(&conn, &tenant, &user, &tx("expense", &account, &category, "3000.00", "2026-10-10")).unwrap();
+        create_transaction(
+            &conn,
+            &tenant,
+            &user,
+            &tx(
+                "income",
+                &account,
+                &income_category,
+                "9000.00",
+                "2026-08-05",
+            ),
+        )
+        .unwrap();
+        create_transaction(
+            &conn,
+            &tenant,
+            &user,
+            &tx("expense", &account, &category, "3000.00", "2026-08-10"),
+        )
+        .unwrap();
+        create_transaction(
+            &conn,
+            &tenant,
+            &user,
+            &tx("expense", &account, &category, "3000.00", "2026-09-10"),
+        )
+        .unwrap();
+        create_transaction(
+            &conn,
+            &tenant,
+            &user,
+            &tx("expense", &account, &category, "3000.00", "2026-10-10"),
+        )
+        .unwrap();
 
         let report = health_report(&conn, &tenant).unwrap();
         assert_eq!(report.savings_rate, Some(0));

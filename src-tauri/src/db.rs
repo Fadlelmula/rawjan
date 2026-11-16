@@ -27,12 +27,14 @@ pub fn open(path: &Path, key_hex: Option<&str>) -> AppResult<Connection> {
          PRAGMA temp_store = MEMORY;",
     )?;
     // Verify the key and database readability before continuing.
-    conn.query_row("SELECT count(*) FROM sqlite_master", [], |row| row.get::<_, i64>(0))
-        .map_err(|e| {
-            AppError::Internal(format!(
-                "The database could not be opened. It may be encrypted with a different key. ({e})"
-            ))
-        })?;
+    conn.query_row("SELECT count(*) FROM sqlite_master", [], |row| {
+        row.get::<_, i64>(0)
+    })
+    .map_err(|e| {
+        AppError::Internal(format!(
+            "The database could not be opened. It may be encrypted with a different key. ({e})"
+        ))
+    })?;
     Ok(conn)
 }
 
@@ -279,20 +281,26 @@ fn seed_settings(conn: &Connection, tenant_id: &str) -> AppResult<()> {
         ("backup_retention_days", json!(30)),
         ("backup_time", json!("02:00")),
         ("app_lock", json!({"enabled": false})),
-        ("health_weights", json!({
-            "emergency_fund": 25,
-            "debt": 20,
-            "cash_flow": 20,
-            "savings_rate": 15,
-            "budget_adherence": 10,
-            "diversification": 10
-        })),
-        ("fi_assumptions", json!({
-            "annual_return_pct": 6.0,
-            "inflation_pct": 2.5,
-            "withdrawal_rate_pct": 4.0,
-            "monthly_expenses": 0
-        })),
+        (
+            "health_weights",
+            json!({
+                "emergency_fund": 25,
+                "debt": 20,
+                "cash_flow": 20,
+                "savings_rate": 15,
+                "budget_adherence": 10,
+                "diversification": 10
+            }),
+        ),
+        (
+            "fi_assumptions",
+            json!({
+                "annual_return_pct": 6.0,
+                "inflation_pct": 2.5,
+                "withdrawal_rate_pct": 4.0,
+                "monthly_expenses": 0
+            }),
+        ),
         ("emergency_fund_months", json!(6)),
     ];
     let mut stmt = conn.prepare(
@@ -316,20 +324,26 @@ fn ensure_default_settings(conn: &Connection, tenant_id: &str) -> AppResult<()> 
         ("backup_retention_days", json!(30)),
         ("backup_time", json!("02:00")),
         ("app_lock", json!({"enabled": false})),
-        ("health_weights", json!({
-            "emergency_fund": 25,
-            "debt": 20,
-            "cash_flow": 20,
-            "savings_rate": 15,
-            "budget_adherence": 10,
-            "diversification": 10
-        })),
-        ("fi_assumptions", json!({
-            "annual_return_pct": 6.0,
-            "inflation_pct": 2.5,
-            "withdrawal_rate_pct": 4.0,
-            "monthly_expenses": 0
-        })),
+        (
+            "health_weights",
+            json!({
+                "emergency_fund": 25,
+                "debt": 20,
+                "cash_flow": 20,
+                "savings_rate": 15,
+                "budget_adherence": 10,
+                "diversification": 10
+            }),
+        ),
+        (
+            "fi_assumptions",
+            json!({
+                "annual_return_pct": 6.0,
+                "inflation_pct": 2.5,
+                "withdrawal_rate_pct": 4.0,
+                "monthly_expenses": 0
+            }),
+        ),
         ("emergency_fund_months", json!(6)),
     ];
     let mut stmt = conn.prepare(
@@ -388,7 +402,17 @@ fn seed_categories(conn: &Connection, tenant_id: &str, user_id: &str) -> AppResu
     )?;
     for (index, (name, kind, icon, color)) in roots.iter().enumerate() {
         let id = uuid::Uuid::new_v4().to_string();
-        insert.execute(params![id, tenant_id, user_id, Option::<String>::None, name, kind, icon, color, now])?;
+        insert.execute(params![
+            id,
+            tenant_id,
+            user_id,
+            Option::<String>::None,
+            name,
+            kind,
+            icon,
+            color,
+            now
+        ])?;
         ids.insert((*name).to_string(), id.clone());
         conn.execute(
             "UPDATE categories SET sort_order = ?2 WHERE id = ?1",
@@ -396,9 +420,21 @@ fn seed_categories(conn: &Connection, tenant_id: &str, user_id: &str) -> AppResu
         )?;
     }
     for (index, (parent, name, kind, icon)) in children.iter().enumerate() {
-        let Some(parent_id) = ids.get(*parent) else { continue };
+        let Some(parent_id) = ids.get(*parent) else {
+            continue;
+        };
         let id = uuid::Uuid::new_v4().to_string();
-        insert.execute(params![id, tenant_id, user_id, parent_id, name, kind, icon, Option::<String>::None, now])?;
+        insert.execute(params![
+            id,
+            tenant_id,
+            user_id,
+            parent_id,
+            name,
+            kind,
+            icon,
+            Option::<String>::None,
+            now
+        ])?;
         conn.execute(
             "UPDATE categories SET sort_order = ?2 WHERE id = ?1",
             params![id, 100 + index as i64],
@@ -407,7 +443,11 @@ fn seed_categories(conn: &Connection, tenant_id: &str, user_id: &str) -> AppResu
     Ok(())
 }
 
-pub fn get_setting_string(conn: &Connection, tenant_id: &str, key: &str) -> AppResult<Option<String>> {
+pub fn get_setting_string(
+    conn: &Connection,
+    tenant_id: &str,
+    key: &str,
+) -> AppResult<Option<String>> {
     let raw: Option<String> = conn
         .query_row(
             "SELECT value FROM tenant_settings WHERE tenant_id = ?1 AND key = ?2",
@@ -415,10 +455,12 @@ pub fn get_setting_string(conn: &Connection, tenant_id: &str, key: &str) -> AppR
             |r| r.get(0),
         )
         .optional()?;
-    Ok(raw.and_then(|v| serde_json::from_str::<serde_json::Value>(&v).ok()).and_then(|v| match v {
-        serde_json::Value::String(s) => Some(s),
-        other => Some(other.to_string()),
-    }))
+    Ok(raw
+        .and_then(|v| serde_json::from_str::<serde_json::Value>(&v).ok())
+        .map(|v| match v {
+            serde_json::Value::String(s) => s,
+            other => other.to_string(),
+        }))
 }
 
 pub fn get_setting_value(
@@ -512,7 +554,10 @@ mod tests {
         }
 
         let wrong = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
-        assert!(open(&path, Some(wrong)).is_err(), "wrong key must not open the vault");
+        assert!(
+            open(&path, Some(wrong)).is_err(),
+            "wrong key must not open the vault"
+        );
     }
 
     #[test]

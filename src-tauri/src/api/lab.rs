@@ -7,10 +7,7 @@ use crate::services::lab::{
 use crate::state::AppState;
 
 #[tauri::command]
-pub fn lab_compound(
-    state: State<'_, AppState>,
-    input: CompoundInput,
-) -> AppResult<CompoundReport> {
+pub fn lab_compound(state: State<'_, AppState>, input: CompoundInput) -> AppResult<CompoundReport> {
     let conn = state.conn();
     lab::compound(&conn, &state.tenant_id, &input)
 }

@@ -183,9 +183,10 @@ Supported formats: CSV, XLSX (first worksheet), OFX and QIF.
 
 ## Testing
 
-Backend: 94 Rust tests covering strict money parsing and overflow, ledger balance, reversals,
-budgets, goals, investments, liabilities, net worth, analytics, income reporting, calendar, journal,
-health, FI, lab, imports, encrypted exports and legacy export compatibility.
+Backend: 119 Rust tests covering strict money parsing and overflow, ledger balance, reversals,
+budgets (including FX-unavailable budgets), goals, investments, liabilities, net worth, analytics
+counting and category percentages, income reporting, calendar, journal, health, FI, lab, imports,
+encrypted exports and legacy export compatibility.
 
 ```bat
 scripts\cargo-env.bat test

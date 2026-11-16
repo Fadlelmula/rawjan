@@ -249,7 +249,9 @@ pub fn create_backup(
         &id,
         "create",
         None,
-        Some(&json!({ "path": path.display().to_string(), "sha256": sha256, "byteSize": byte_size })),
+        Some(
+            &json!({ "path": path.display().to_string(), "sha256": sha256, "byteSize": byte_size }),
+        ),
     )?;
 
     Ok(BackupDto {
@@ -348,7 +350,9 @@ pub fn delete_backup(
 pub fn validate_backup(path: &str) -> AppResult<BackupValidation> {
     let path_ref = Path::new(path);
     if !path_ref.is_file() {
-        return Err(AppError::Validation("That backup file does not exist.".into()));
+        return Err(AppError::Validation(
+            "That backup file does not exist.".into(),
+        ));
     }
     let (key, encrypted) = db::resolve_database_key()?;
     let file_name = path_ref
@@ -463,8 +467,9 @@ fn derive_key(passphrase: &str, salt: &[u8]) -> AppResult<[u8; KEY_LEN]> {
             "Use a passphrase of at least 8 characters. It is never stored.".into(),
         ));
     }
-    let params = Params::new(19_456, 2, 1, Some(KEY_LEN))
-        .map_err(|error| AppError::Internal(format!("could not configure key derivation: {error}")))?;
+    let params = Params::new(19_456, 2, 1, Some(KEY_LEN)).map_err(|error| {
+        AppError::Internal(format!("could not configure key derivation: {error}"))
+    })?;
     let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
     let mut key = [0u8; KEY_LEN];
     argon
@@ -500,7 +505,9 @@ fn encrypt_bytes(passphrase: &str, plaintext: &[u8]) -> AppResult<Vec<u8>> {
 
 fn decrypt_bytes(passphrase: &str, bytes: &[u8]) -> AppResult<Vec<u8>> {
     if bytes.len() < MAGIC.len() + SALT_LEN + NONCE_LEN + 16 {
-        return Err(AppError::Validation("That file is too short to be a Rawjan export.".into()));
+        return Err(AppError::Validation(
+            "That file is too short to be a Rawjan export.".into(),
+        ));
     }
     if !bytes.starts_with(MAGIC) && !bytes.starts_with(LEGACY_MAGIC) {
         return Err(AppError::Validation(
@@ -587,7 +594,9 @@ pub fn create_export(
         &id,
         "create",
         None,
-        Some(&json!({ "path": path.display().to_string(), "sha256": sha256, "byteSize": byte_size })),
+        Some(
+            &json!({ "path": path.display().to_string(), "sha256": sha256, "byteSize": byte_size }),
+        ),
     )?;
 
     Ok(ExportResult {
@@ -604,7 +613,9 @@ pub fn create_export(
 pub fn verify_export(path: &str, passphrase: &str) -> AppResult<ExportSummary> {
     let path_ref = Path::new(path);
     if !path_ref.is_file() {
-        return Err(AppError::Validation("That export file does not exist.".into()));
+        return Err(AppError::Validation(
+            "That export file does not exist.".into(),
+        ));
     }
     let bytes = std::fs::read(path_ref)?;
     let plaintext = decrypt_bytes(passphrase, &bytes)?;
@@ -618,7 +629,10 @@ pub fn verify_export(path: &str, passphrase: &str) -> AppResult<ExportSummary> {
                 .iter()
                 .map(|(table, rows)| TableCount {
                     table: table.clone(),
-                    rows: rows.as_array().map(|values| values.len() as i64).unwrap_or(0),
+                    rows: rows
+                        .as_array()
+                        .map(|values| values.len() as i64)
+                        .unwrap_or(0),
                 })
                 .collect::<Vec<_>>()
         })
@@ -679,7 +693,9 @@ mod tests {
             .and_then(Value::as_array)
             .unwrap();
         assert!(!categories.is_empty());
-        assert!(counts.iter().any(|count| count.table == "categories" && count.rows > 0));
+        assert!(counts
+            .iter()
+            .any(|count| count.table == "categories" && count.rows > 0));
     }
 
     #[test]

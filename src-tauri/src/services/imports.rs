@@ -3,8 +3,8 @@ use std::str::FromStr;
 
 use calamine::{open_workbook_auto, Data, Reader};
 use chrono::{NaiveDate, NaiveDateTime};
-use rust_decimal::Decimal;
 use rusqlite::{params, Connection, OptionalExtension};
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -54,17 +54,32 @@ impl ColumnMapping {
             }
             for header in headers {
                 let normalized = header.trim().to_lowercase();
-                if candidates.iter().any(|candidate| normalized.contains(candidate)) {
+                if candidates
+                    .iter()
+                    .any(|candidate| normalized.contains(candidate))
+                {
                     return Some(header.clone());
                 }
             }
             None
         };
         Self {
-            date: find(&["date", "posted", "posting date", "transaction date", "value date"]),
+            date: find(&[
+                "date",
+                "posted",
+                "posting date",
+                "transaction date",
+                "value date",
+            ]),
             description: find(&["description", "details", "memo", "narrative", "particulars"]),
             amount: find(&["amount", "transaction amount", "value"]),
-            debit: find(&["debit", "withdrawal", "withdrawals", "money out", "paid out"]),
+            debit: find(&[
+                "debit",
+                "withdrawal",
+                "withdrawals",
+                "money out",
+                "paid out",
+            ]),
             credit: find(&["credit", "deposit", "deposits", "money in", "paid in"]),
             payee: find(&["payee", "merchant", "name", "beneficiary"]),
             category: find(&["category"]),
@@ -291,10 +306,9 @@ pub fn preview(
             } else {
                 row.normalized.clone()
             };
-            let issue = mapped
-                .issue
-                .clone()
-                .or_else(|| preview_issue(&mapped, &suggested_mapping, account_currency.as_deref()));
+            let issue = mapped.issue.clone().or_else(|| {
+                preview_issue(&mapped, &suggested_mapping, account_currency.as_deref())
+            });
             let status = if issue.is_some() { "error" } else { "ok" };
             stmt.execute(params![
                 uuid::Uuid::new_v4().to_string(),
@@ -316,7 +330,7 @@ pub fn preview(
             "SELECT row_index, raw_json, normalized_json, status, error_message
              FROM import_rows WHERE import_job_id = ?1 ORDER BY row_index LIMIT ?2",
         )?;
-        let mut mapped = stmt.query_map(params![job_id, PREVIEW_ROWS], |row| {
+        let mapped = stmt.query_map(params![job_id, PREVIEW_ROWS], |row| {
             let raw: String = row.get(1)?;
             let normalized: String = row.get(2)?;
             Ok(ImportPreviewRow {
@@ -327,7 +341,7 @@ pub fn preview(
                 issue: row.get(4)?,
             })
         })?;
-        while let Some(item) = mapped.next() {
+        for item in mapped {
             preview_rows.push(item?);
         }
     }
@@ -346,7 +360,11 @@ pub fn preview(
     })
 }
 
-fn preview_issue(row: &NormalizedRow, mapping: &ColumnMapping, account_currency: Option<&str>) -> Option<String> {
+fn preview_issue(
+    row: &NormalizedRow,
+    mapping: &ColumnMapping,
+    account_currency: Option<&str>,
+) -> Option<String> {
     if row.issue.is_some() {
         return row.issue.clone();
     }
@@ -357,17 +375,33 @@ fn preview_issue(row: &NormalizedRow, mapping: &ColumnMapping, account_currency:
         return Some(format!("Unreadable date '{}'.", row.date));
     }
     if let Some(raw) = row.amount.as_deref().filter(|v| !v.trim().is_empty()) {
-        if parse_money(raw, &mapping.decimal_separator).ok().flatten().is_none() {
+        if parse_money(raw, &mapping.decimal_separator)
+            .ok()
+            .flatten()
+            .is_none()
+        {
             return Some(format!("Unreadable amount '{raw}'."));
         }
     }
-    for raw in [row.debit.as_deref(), row.credit.as_deref()].into_iter().flatten() {
-        if !raw.trim().is_empty() && parse_money(raw, &mapping.decimal_separator).ok().flatten().is_none() {
+    for raw in [row.debit.as_deref(), row.credit.as_deref()]
+        .into_iter()
+        .flatten()
+    {
+        if !raw.trim().is_empty()
+            && parse_money(raw, &mapping.decimal_separator)
+                .ok()
+                .flatten()
+                .is_none()
+        {
             return Some(format!("Unreadable amount '{raw}'."));
         }
     }
-    if let (Some(row_currency), Some(account_currency)) = (row.currency.as_deref(), account_currency) {
-        if !row_currency.trim().is_empty() && !row_currency.trim().eq_ignore_ascii_case(account_currency) {
+    if let (Some(row_currency), Some(account_currency)) =
+        (row.currency.as_deref(), account_currency)
+    {
+        if !row_currency.trim().is_empty()
+            && !row_currency.trim().eq_ignore_ascii_case(account_currency)
+        {
             return Some(format!(
                 "Statement currency {} does not match the account currency {account_currency}.",
                 row_currency.trim()
@@ -378,9 +412,20 @@ fn preview_issue(row: &NormalizedRow, mapping: &ColumnMapping, account_currency:
 }
 
 fn mapping_is_usable(row: &NormalizedRow) -> bool {
-    row.amount.as_deref().map(|v| !v.trim().is_empty()).unwrap_or(false)
-        || row.debit.as_deref().map(|v| !v.trim().is_empty()).unwrap_or(false)
-        || row.credit.as_deref().map(|v| !v.trim().is_empty()).unwrap_or(false)
+    row.amount
+        .as_deref()
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false)
+        || row
+            .debit
+            .as_deref()
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false)
+        || row
+            .credit
+            .as_deref()
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false)
 }
 
 fn column_index(headers: &[String], name: Option<&String>) -> Option<usize> {
@@ -445,10 +490,14 @@ pub fn commit(
     let account_id = account_override
         .map(str::to_string)
         .or(job_account)
-        .ok_or_else(|| AppError::Validation("Choose the account this statement belongs to.".into()))?;
+        .ok_or_else(|| {
+            AppError::Validation("Choose the account this statement belongs to.".into())
+        })?;
     let account = tx::load_account(conn, tenant_id, &account_id)?;
     if !account.is_active {
-        return Err(AppError::Validation("The selected account is archived.".into()));
+        return Err(AppError::Validation(
+            "The selected account is archived.".into(),
+        ));
     }
     let exp = exponent(conn, &account.currency)?;
     let status = match mapping.status.as_str() {
@@ -466,9 +515,17 @@ pub fn commit(
         ));
     }
 
-    let expense_category = ensure_category(conn, tenant_id, user_id, "Uncategorised expense", "expense")?;
-    let income_category = ensure_category(conn, tenant_id, user_id, "Uncategorised income", "income")?;
-    let equity_category = ensure_category(conn, tenant_id, user_id, "Imported balance change", "equity")?;
+    let expense_category =
+        ensure_category(conn, tenant_id, user_id, "Uncategorised expense", "expense")?;
+    let income_category =
+        ensure_category(conn, tenant_id, user_id, "Uncategorised income", "income")?;
+    let equity_category = ensure_category(
+        conn,
+        tenant_id,
+        user_id,
+        "Imported balance change",
+        "equity",
+    )?;
 
     let mut rows: Vec<(i64, Vec<String>, NormalizedRow)> = Vec::new();
     {
@@ -476,7 +533,7 @@ pub fn commit(
             "SELECT row_index, raw_json, normalized_json FROM import_rows
              WHERE import_job_id = ?1 ORDER BY row_index",
         )?;
-        let mut mapped = stmt.query_map(params![job_id], |row| {
+        let mapped = stmt.query_map(params![job_id], |row| {
             let raw: String = row.get(1)?;
             let normalized: String = row.get(2)?;
             Ok((
@@ -485,7 +542,7 @@ pub fn commit(
                 serde_json::from_str::<NormalizedRow>(&normalized).unwrap_or_default(),
             ))
         })?;
-        while let Some(item) = mapped.next() {
+        for item in mapped {
             rows.push(item?);
         }
     }
@@ -505,7 +562,14 @@ pub fn commit(
         };
         if row.issue.is_some() {
             skipped += 1;
-            update_row(conn, job_id, row_index, "skipped", row.issue.as_deref(), None)?;
+            update_row(
+                conn,
+                job_id,
+                row_index,
+                "skipped",
+                row.issue.as_deref(),
+                None,
+            )?;
             continue;
         }
         match commit_row(
@@ -527,7 +591,14 @@ pub fn commit(
             }
             Ok(Outcome::Duplicate) => {
                 duplicates += 1;
-                update_row(conn, job_id, row_index, "duplicate", Some("Already recorded."), None)?;
+                update_row(
+                    conn,
+                    job_id,
+                    row_index,
+                    "duplicate",
+                    Some("Already recorded."),
+                    None,
+                )?;
             }
             Err(error) => {
                 errors += 1;
@@ -615,9 +686,19 @@ fn commit_row(
         let candidate = row.description.trim();
         if !candidate.is_empty() {
             candidate.to_string()
-        } else if let Some(payee) = row.payee.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+        } else if let Some(payee) = row
+            .payee
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
             payee.to_string()
-        } else if let Some(reference) = row.reference.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+        } else if let Some(reference) = row
+            .reference
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
             format!("Imported transaction {reference}")
         } else {
             "Imported transaction".to_string()
@@ -629,7 +710,12 @@ fn commit_row(
         ));
     }
 
-    if let Some(currency) = row.currency.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+    if let Some(currency) = row
+        .currency
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
         if !currency.eq_ignore_ascii_case(&account.currency) {
             return Err(AppError::Validation(format!(
                 "Statement currency {currency} does not match the account currency {}.",
@@ -670,7 +756,9 @@ fn commit_row(
             }
         }
     } else {
-        return Err(AppError::Validation("The amount is zero or missing.".into()));
+        return Err(AppError::Validation(
+            "The amount is zero or missing.".into(),
+        ));
     };
 
     let amount_minor = amount_to_minor(magnitude, exp)?;
@@ -705,7 +793,14 @@ fn commit_row(
     let input = TxInput {
         kind: kind.to_string(),
         status: Some(status.to_string()),
-        data_status: Some(if status == "pending" { "pending" } else { "actual" }.into()),
+        data_status: Some(
+            if status == "pending" {
+                "pending"
+            } else {
+                "actual"
+            }
+            .into(),
+        ),
         description,
         payee: row
             .payee
@@ -825,7 +920,11 @@ fn resolve_category(
 // Jobs
 // ---------------------------------------------------------------------------
 
-pub fn list_jobs(conn: &Connection, tenant_id: &str, limit: Option<i64>) -> AppResult<Vec<ImportJobDto>> {
+pub fn list_jobs(
+    conn: &Connection,
+    tenant_id: &str,
+    limit: Option<i64>,
+) -> AppResult<Vec<ImportJobDto>> {
     let limit = limit.unwrap_or(50).clamp(1, 200);
     let mut stmt = conn.prepare(
         "SELECT id, file_name, format, status, row_count, imported_count, duplicate_count,
@@ -880,8 +979,11 @@ fn decode_text(bytes: &[u8]) -> String {
 }
 
 fn detect_delimiter(sample: &str) -> u8 {
-    let line = sample.lines().find(|line| !line.trim().is_empty()).unwrap_or("");
-    let candidates = [b',', b';', b'\t', b'|'];
+    let line = sample
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("");
+    let candidates = *b",;\t|";
     let mut best = (b',', 0usize);
     for delimiter in candidates {
         let count = line.bytes().filter(|byte| *byte == delimiter).count();
@@ -906,7 +1008,8 @@ fn parse_csv(bytes: &[u8]) -> AppResult<ParsedFile> {
 
     let mut records: Vec<Vec<String>> = Vec::new();
     for record in reader.records() {
-        let record = record.map_err(|error| AppError::Validation(format!("Could not read the CSV: {error}")))?;
+        let record = record
+            .map_err(|error| AppError::Validation(format!("Could not read the CSV: {error}")))?;
         records.push(record.iter().map(|cell| cell.trim().to_string()).collect());
         if records.len() > MAX_ROWS + 1 {
             break;
@@ -973,7 +1076,9 @@ fn parse_xlsx(path: &Path) -> AppResult<ParsedFile> {
     let range = workbook
         .worksheet_range_at(0)
         .ok_or_else(|| AppError::Validation("The workbook has no worksheets.".into()))?
-        .map_err(|error| AppError::Validation(format!("Could not read the first worksheet: {error}")))?;
+        .map_err(|error| {
+            AppError::Validation(format!("Could not read the first worksheet: {error}"))
+        })?;
 
     let mut rows_raw: Vec<Vec<String>> = range
         .rows()
@@ -1088,7 +1193,9 @@ fn parse_ofx(bytes: &[u8]) -> AppResult<ParsedFile> {
             .unwrap_or_else(|| "Imported transaction".to_string());
         let reference = tag_value(block, "FITID");
         let currency = tag_value(block, "CURSYM");
-        let transaction_type = tag_value(block, "TRNTYPE").unwrap_or_default().to_uppercase();
+        let transaction_type = tag_value(block, "TRNTYPE")
+            .unwrap_or_default()
+            .to_uppercase();
         let issue = if date.is_empty() {
             Some("OFX row has no readable posting date.".into())
         } else if amount.is_none() {
@@ -1123,7 +1230,9 @@ fn parse_ofx(bytes: &[u8]) -> AppResult<ParsedFile> {
         });
     }
     if rows.is_empty() {
-        return Err(AppError::Validation("No OFX transactions were found.".into()));
+        return Err(AppError::Validation(
+            "No OFX transactions were found.".into(),
+        ));
     }
     Ok(ParsedFile {
         headers: vec![
@@ -1167,10 +1276,13 @@ fn parse_qif(bytes: &[u8]) -> AppResult<ParsedFile> {
             let transfer = row
                 .category
                 .as_deref()
-                .map(|value| value.trim().starts_with('[') || value.eq_ignore_ascii_case("transfer"))
+                .map(|value| {
+                    value.trim().starts_with('[') || value.eq_ignore_ascii_case("transfer")
+                })
                 .unwrap_or(false);
             if transfer {
-                row.issue = Some("Transfers need two accounts and are skipped by the importer.".into());
+                row.issue =
+                    Some("Transfers need two accounts and are skipped by the importer.".into());
                 row.category = None;
             }
             let cells = vec![
@@ -1229,10 +1341,8 @@ fn parse_qif(bytes: &[u8]) -> AppResult<ParsedFile> {
                 }
                 'L' => row.category = Some(value.to_string()),
                 'N' => row.reference = Some(value.to_string()),
-                'U' => {
-                    if row.amount.is_none() {
-                        row.amount = Some(value.to_string());
-                    }
+                'U' if row.amount.is_none() => {
+                    row.amount = Some(value.to_string());
                 }
                 _ => {}
             }
@@ -1241,12 +1351,15 @@ fn parse_qif(bytes: &[u8]) -> AppResult<ParsedFile> {
     flush(&mut current, &mut rows);
 
     if rows.is_empty() {
-        return Err(AppError::Validation("No QIF transactions were found.".into()));
+        return Err(AppError::Validation(
+            "No QIF transactions were found.".into(),
+        ));
     }
     for row in rows.iter_mut() {
         if row.normalized.issue.is_none() {
             if parse_flexible_date(&row.normalized.date, "auto").is_none() {
-                row.normalized.issue = Some(format!("Unreadable QIF date '{}'.", row.normalized.date));
+                row.normalized.issue =
+                    Some(format!("Unreadable QIF date '{}'.", row.normalized.date));
             } else if row.normalized.amount.is_none() {
                 row.normalized.issue = Some("QIF row has no amount.".into());
             }
@@ -1296,7 +1409,7 @@ fn parse_flexible_date(raw: &str, order: &str) -> Option<NaiveDate> {
     }
 
     let parts: Vec<&str> = raw
-        .split(|c: char| c == '/' || c == '-' || c == '.' || c == '\'' || c == ' ')
+        .split(['/', '-', '.', '\'', ' '])
         .filter(|part| !part.is_empty())
         .collect();
     if parts.len() < 3 {
@@ -1333,7 +1446,11 @@ fn normalize_year(raw: &str) -> Option<i32> {
         4 => digits.parse().ok(),
         2 => {
             let value: i32 = digits.parse().ok()?;
-            Some(if value >= 70 { 1900 + value } else { 2000 + value })
+            Some(if value >= 70 {
+                1900 + value
+            } else {
+                2000 + value
+            })
         }
         _ => None,
     }
@@ -1356,7 +1473,10 @@ fn parse_money(raw: &str, separator: &str) -> AppResult<Option<Decimal>> {
         return Ok(None);
     };
     let core = &trimmed[first..=last];
-    if !core.chars().all(|c| c.is_ascii_digit() || c == '.' || c == ',') {
+    if !core
+        .chars()
+        .all(|c| c.is_ascii_digit() || c == '.' || c == ',')
+    {
         return Err(AppError::Validation(format!("Unreadable amount '{raw}'.")));
     }
     let decoration = format!("{}{}", &trimmed[..first], &trimmed[last + 1..]);
@@ -1375,7 +1495,11 @@ fn parse_money(raw: &str, separator: &str) -> AppResult<Option<Decimal>> {
             let dots = cleaned.matches('.').count();
             let commas = cleaned.matches(',').count();
             if dots > 0 && commas > 0 {
-                let decimal_char = if cleaned.rfind('.') > cleaned.rfind(',') { '.' } else { ',' };
+                let decimal_char = if cleaned.rfind('.') > cleaned.rfind(',') {
+                    '.'
+                } else {
+                    ','
+                };
                 let thousands_char = if decimal_char == '.' { ',' } else { '.' };
                 cleaned.retain(|c| c != thousands_char);
                 if decimal_char == ',' {
@@ -1498,7 +1622,10 @@ mod tests {
         assert_eq!(result.imported, 2);
         assert_eq!(result.errors, 0);
 
-        let path2 = write_temp("again.csv", "Date,Description,Amount\n2026-01-05,Coffee,-12.50\n");
+        let path2 = write_temp(
+            "again.csv",
+            "Date,Description,Amount\n2026-01-05,Coffee,-12.50\n",
+        );
         let preview2 = preview(
             &conn,
             &tenant,
@@ -1610,10 +1737,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(preview.row_count, 2);
-        assert!(preview
-            .rows
-            .iter()
-            .any(|row| row.issue.as_deref().unwrap_or("").contains("Transfers")));
+        assert!(preview.rows.iter().any(|row| row
+            .issue
+            .as_deref()
+            .unwrap_or("")
+            .contains("Transfers")));
     }
 
     #[test]
@@ -1699,7 +1827,10 @@ mod tests {
             },
         )
         .unwrap();
-        let path = write_temp("card.csv", "Date,Description,Amount\n2026-02-01,Payment,300.00\n");
+        let path = write_temp(
+            "card.csv",
+            "Date,Description,Amount\n2026-02-01,Payment,300.00\n",
+        );
         let preview = preview(
             &conn,
             &tenant,
@@ -1721,7 +1852,9 @@ mod tests {
         .unwrap();
         assert_eq!(result.imported, 1);
         let kind: String = conn
-            .query_row("SELECT kind FROM transactions LIMIT 1", [], |row| row.get(0))
+            .query_row("SELECT kind FROM transactions LIMIT 1", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(kind, "adjustment");
     }
@@ -1729,7 +1862,10 @@ mod tests {
     #[test]
     fn a_committed_job_cannot_be_committed_twice() {
         let (conn, tenant, user, account_id) = setup();
-        let path = write_temp("once.csv", "Date,Description,Amount\n2026-03-01,Thing,-1.00\n");
+        let path = write_temp(
+            "once.csv",
+            "Date,Description,Amount\n2026-03-01,Thing,-1.00\n",
+        );
         let preview = preview(
             &conn,
             &tenant,
@@ -1765,7 +1901,10 @@ mod tests {
     #[test]
     fn import_rows_become_real_ledger_entries() {
         let (conn, tenant, user, account_id) = setup();
-        let path = write_temp("ledger.csv", "Date,Description,Amount\n2026-04-01,Thing,-10.00\n");
+        let path = write_temp(
+            "ledger.csv",
+            "Date,Description,Amount\n2026-04-01,Thing,-10.00\n",
+        );
         let preview = preview(
             &conn,
             &tenant,
