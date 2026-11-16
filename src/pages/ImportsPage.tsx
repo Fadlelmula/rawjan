@@ -608,9 +608,8 @@ export function ImportsPage() {
       <div className="flex items-start gap-2 rounded-xl border border-lily-500/20 bg-lily-600/[0.06] px-3.5 py-2.5 text-[0.62rem] leading-relaxed text-lily-200/80">
         <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
         <span>
-          No bank connection is used here. QIB does not publish a public customer API, and open
-          banking requires a licensed provider and your consent. Statement files and manual entry
-          are the honest path.
+          Statement files are read on this device and nothing is sent to a bank or any other
+          service. Manual entry is always available for anything the importer cannot read.
         </span>
       </div>
     </div>

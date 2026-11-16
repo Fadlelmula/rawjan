@@ -509,8 +509,8 @@ function IntegrationsTab() {
   return (
     <div className="space-y-3">
       <Alert tone="info" title="No third-party connection is active">
-        Rawjan does not ask for bank passwords and does not scrape websites. Statements can be imported and
-        entries entered manually. The items below describe real capability limits for this build.
+        Rawjan keeps your data on this device and never sends it to an external service. The items below
+        describe the real capability limits of this build.
       </Alert>
       {integrations.isLoading ? (
         <div className="flex items-center gap-2 py-8 text-xs text-zinc-500">

@@ -65,9 +65,6 @@ lives in [`docs/screenshots`](docs/screenshots).
 
 These are shown honestly in the app instead of being faked:
 
-- **Automatic bank connections** — QIB does not publish a public or sandbox customer API, and QCB open
-  banking requires a licensed third-party provider and explicit consent. Rawjan never asks for a bank
-  password and never scrapes a website.
 - **PDF statement parsing** — PDF layouts vary too much to read reliably. The importer refuses PDFs with an
   explicit message rather than guessing.
 - **Market price and FX feeds** — exchange rates are entered manually; investment valuations are manual.

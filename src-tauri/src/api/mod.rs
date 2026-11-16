@@ -585,22 +585,6 @@ pub fn list_integration_status() -> Vec<IntegrationStatus> {
     };
     vec![
         item(
-            "qib",
-            "Qatar Islamic Bank (QIB)",
-            "bank",
-            false,
-            "QIB does not publish a public or sandbox API for individual customers. A live connection would require a licensed open-banking provider and your explicit consent. Rawjan never asks for bank passwords and never scrapes websites. Use statement imports or manual entry instead.",
-            Some("https://www.qib.com.qa"),
-        ),
-        item(
-            "qcb_open_banking",
-            "Qatar Central Bank open banking",
-            "bank",
-            false,
-            "QCB open banking is accessed through licensed third-party providers. Rawjan is not a licensed provider, so no live bank connection is offered in this build.",
-            Some("https://www.qcb.gov.qa"),
-        ),
-        item(
             "statement_import",
             "Statement import",
             "import",
