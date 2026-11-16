@@ -58,7 +58,7 @@ lives in [`docs/screenshots`](docs/screenshots).
 | FI calculator | Working. FI number, coast number, projection and explicit assumptions. |
 | Financial health | Working. Weighted components, unavailable components excluded and weights renormalized. Not advice. |
 | Statement import | Working. CSV, XLSX, OFX and QIF with preview, mapping, validation and duplicate detection. |
-| Backups & exports | Working. Verified SQLCipher page-copy backups; Argon2id + ChaCha20-Poly1305 encrypted JSON exports. |
+| Backups & exports | Working. Verified SQLCipher page-copy backups; Argon2id + ChaCha20-Poly1305 encrypted JSON exports; CSV report exports. |
 | Settings | Working. Currency, locale, appearance, exchange rates, integrations status, audit trail. |
 
 ## What is deliberately not built
@@ -124,6 +124,8 @@ scripts\dev.bat
 - **Original values:** transactions keep their original currency and amount, plus the historical FX
   snapshot and base-currency amount used for reports.
 - **Audit trail:** mutations write local audit events. Posted ledger entries are reversed, not edited.
+- **Ledger invariant:** Settings → Vault & data re-checks that every transaction's debits equal its
+  credits and that the SQLite integrity check passes. Unbalanced data is reported, never hidden.
 - **Previous name:** builds before the rename stored the vault at
   `%APPDATA%\com.aureqis.finance\aureqis.db` with the key `aureqis-finance`. On first launch, Rawjan
   copies that vault and its key into the new locations and leaves the old files untouched. If the old
@@ -208,7 +210,9 @@ npm run typecheck
 npm run build
 ```
 
-There is no CI pipeline yet; the checks above are what currently gates a change locally.
+Continuous integration (`.github/workflows/ci.yml`) runs the same suite on Windows for every push
+and pull request: frontend typecheck, tests and production build, then `cargo fmt --check`,
+`cargo clippy --all-targets` and `cargo test`.
 
 ## Packaging
 
@@ -225,6 +229,7 @@ signing certificate is configured.
 ## Repository layout
 
 ```
+.github/workflows/  CI: typecheck, tests, build, fmt, clippy
 src/                 React + TypeScript frontend
 src/components/      Shell, shared UI, transaction composer/detail
 src/pages/           One page per module
