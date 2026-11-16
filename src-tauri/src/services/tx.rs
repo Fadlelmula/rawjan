@@ -266,7 +266,7 @@ fn create_transaction_inner(
     let base_amount = if tx_currency == base_currency {
         amount_minor
     } else {
-        convert_minor(amount_minor, tx_exp, base_exp, rate_value)
+        convert_minor(amount_minor, tx_exp, base_exp, rate_value)?
     };
     if base_amount <= 0 {
         return Err(AppError::Validation("Converted base amount is zero. Check the exchange rate.".into()));
@@ -394,7 +394,7 @@ fn create_transaction_inner(
             let converted = if tx_currency == base_currency {
                 *leg_amount
             } else {
-                convert_minor(*leg_amount, tx_exp, base_exp, rate_value)
+                convert_minor(*leg_amount, tx_exp, base_exp, rate_value)?
             };
             allocated += converted;
             category_bases.push(converted);

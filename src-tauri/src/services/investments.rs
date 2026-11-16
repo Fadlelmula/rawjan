@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::str::FromStr;
+
 
 use rust_decimal::{Decimal, RoundingStrategy};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -189,16 +189,13 @@ pub struct ValuationInput {
 }
 
 fn parse_scaled(input: &str, scale: u32) -> AppResult<i64> {
-    let cleaned: String = input
-        .chars()
-        .filter(|c| c.is_ascii_digit() || *c == '.' || *c == '-' || *c == '+')
-        .collect();
-    if cleaned.trim().is_empty() {
+    if input.trim().is_empty() {
         return Err(AppError::Validation("Enter a number.".into()));
     }
-    let value = Decimal::from_str(&cleaned)
-        .map_err(|_| AppError::Validation(format!("'{input}' is not a valid number.")))?;
-    let scaled = value * Decimal::from(10i64.pow(scale));
+    let value = crate::money::parse_decimal(input)?;
+    let scaled = value
+        .checked_mul(Decimal::from(crate::money::pow10(scale)?))
+        .ok_or_else(|| AppError::Validation("Number is too large.".into()))?;
     scaled
         .round_dp_with_strategy(0, RoundingStrategy::MidpointAwayFromZero)
         .try_into()

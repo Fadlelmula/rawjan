@@ -1,4 +1,4 @@
-use std::str::FromStr;
+
 
 use rust_decimal::prelude::MathematicalOps;
 use rust_decimal::{Decimal, RoundingStrategy};
@@ -105,14 +105,10 @@ pub struct InflationReport {
 }
 
 fn parse_percent(label: &str, raw: &str, max: i64) -> AppResult<Decimal> {
-    let cleaned: String = raw
-        .chars()
-        .filter(|c| c.is_ascii_digit() || *c == '.' || *c == '-' || *c == '+')
-        .collect();
-    if cleaned.trim().is_empty() {
+    if raw.trim().is_empty() {
         return Err(AppError::Validation(format!("Enter {label}.")));
     }
-    let value = Decimal::from_str(&cleaned)
+    let value = crate::money::parse_decimal(raw)
         .map_err(|_| AppError::Validation(format!("'{raw}' is not a valid {label}.")))?;
     if value < Decimal::ZERO || value > Decimal::from(max) {
         return Err(AppError::Validation(format!(
@@ -149,7 +145,7 @@ pub fn compound(
     }
     let annual = parse_percent("annual return", &input.annual_return, 100)?;
 
-    let scale = Decimal::from(pow10(exp));
+    let scale = Decimal::from(pow10(exp)?);
     let mut balance = Decimal::from(initial) / scale;
     let contribution = Decimal::from(monthly) / scale;
     let monthly_rate = annual / Decimal::from(100) / Decimal::from(12);
@@ -219,7 +215,7 @@ pub fn loan(conn: &Connection, tenant_id: &str, input: &LoanInput) -> AppResult<
     }
     let annual = parse_percent("annual interest rate", &input.annual_rate, 100)?;
 
-    let scale = Decimal::from(pow10(exp));
+    let scale = Decimal::from(pow10(exp)?);
     let principal_value = Decimal::from(principal) / scale;
     let monthly_rate = annual / Decimal::from(100) / Decimal::from(12);
 
@@ -317,7 +313,7 @@ pub fn inflation(
     }
     let rate = parse_percent("annual inflation", &input.annual_inflation, 100)?;
 
-    let scale = Decimal::from(pow10(exp));
+    let scale = Decimal::from(pow10(exp)?);
     let value = Decimal::from(amount) / scale;
     let factor = (Decimal::ONE + rate / Decimal::from(100)).powi(input.years);
     let future = value * factor;

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::dates::{iso, today_local};
 use crate::error::{AppError, AppResult};
-use crate::money::{convert_minor, format_amount};
+use crate::money::format_amount;
 use crate::services::currency::{convert_to_currency, exponent, primary_currency};
 
 #[derive(Debug, Clone, Serialize)]
@@ -645,6 +645,4 @@ pub fn account_balance_in_base(
     Ok(converted)
 }
 
-pub fn base_minor(amount: i64, from_exp: u32, to_exp: u32, rate: rust_decimal::Decimal) -> i64 {
-    convert_minor(amount, from_exp, to_exp, rate)
-}
+

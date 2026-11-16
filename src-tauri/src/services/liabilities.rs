@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::str::FromStr;
+
 
 use chrono::{Datelike, NaiveDate};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -161,18 +161,16 @@ fn parse_bps(value: Option<&str>) -> AppResult<i64> {
     match value.map(str::trim).filter(|v| !v.is_empty()) {
         None => Ok(0),
         Some(raw) => {
-            let cleaned: String = raw
-                .chars()
-                .filter(|c| c.is_ascii_digit() || *c == '.' || *c == '-' || *c == '+')
-                .collect();
-            let parsed = Decimal::from_str(&cleaned)
+            let parsed = crate::money::parse_decimal(raw)
                 .map_err(|_| AppError::Validation(format!("'{raw}' is not a valid interest rate.")))?;
             if parsed < Decimal::ZERO {
                 return Err(AppError::Validation(
                     "Interest rate cannot be negative.".into(),
                 ));
             }
-            let bps = (parsed * Decimal::from(100))
+            let bps = parsed
+                .checked_mul(Decimal::from(100))
+                .ok_or_else(|| AppError::Validation("Interest rate is too large.".into()))?
                 .round_dp_with_strategy(0, RoundingStrategy::MidpointAwayFromZero);
             bps.try_into()
                 .map_err(|_| AppError::Validation("Interest rate is too large.".into()))

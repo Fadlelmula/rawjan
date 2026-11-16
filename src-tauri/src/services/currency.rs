@@ -150,7 +150,7 @@ pub fn convert_to_currency(
     let from_exp = exponent(conn, from_code)?;
     let to_exp = exponent(conn, to_code)?;
     let snapshot = require_rate(conn, tenant_id, from_code, to_code, on_date)?;
-    let converted = convert_minor(amount_minor, from_exp, to_exp, snapshot.rate);
+    let converted = convert_minor(amount_minor, from_exp, to_exp, snapshot.rate)?;
     Ok((converted, snapshot))
 }
 

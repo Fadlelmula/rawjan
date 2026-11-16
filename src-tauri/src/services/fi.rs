@@ -1,4 +1,4 @@
-use std::str::FromStr;
+
 
 use rust_decimal::prelude::MathematicalOps;
 use rust_decimal::{Decimal, RoundingStrategy};
@@ -60,16 +60,11 @@ pub struct FiReport {
 }
 
 fn parse_percent(label: &str, raw: &str) -> AppResult<Decimal> {
-    let cleaned: String = raw
-        .chars()
-        .filter(|c| c.is_ascii_digit() || *c == '.' || *c == '-' || *c == '+')
-        .collect();
-    if cleaned.trim().is_empty() {
+    if raw.trim().is_empty() {
         return Err(AppError::Validation(format!("Enter {label}.")));
     }
-    let value = Decimal::from_str(&cleaned)
-        .map_err(|_| AppError::Validation(format!("'{raw}' is not a valid {label}.")))?;
-    Ok(value)
+    crate::money::parse_decimal(raw)
+        .map_err(|_| AppError::Validation(format!("'{raw}' is not a valid {label}.")))
 }
 
 fn round_minor(value: Decimal, exp: u32) -> AppResult<i64> {
@@ -130,7 +125,7 @@ pub fn calculate(
         }
     }
 
-    let scale = Decimal::from(pow10(exp));
+    let scale = Decimal::from(pow10(exp)?);
     let annual = Decimal::from(annual_expenses) / scale;
     let current = Decimal::from(current_invested) / scale;
     let contribution = Decimal::from(monthly_contribution) / scale;

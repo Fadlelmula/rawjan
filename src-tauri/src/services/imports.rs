@@ -1344,15 +1344,26 @@ fn parse_money(raw: &str, separator: &str) -> AppResult<Option<Decimal>> {
     if trimmed.is_empty() {
         return Ok(None);
     }
-    let negative = (trimmed.starts_with('(') && trimmed.ends_with(')')) || trimmed.contains('-');
 
-    let mut cleaned: String = trimmed
-        .chars()
-        .filter(|c| c.is_ascii_digit() || *c == '.' || *c == ',')
-        .collect();
-    if cleaned.is_empty() {
+    // Currency codes, symbols and signs are decoration around the number, never
+    // part of it. Keeping only the span between the first and last digit means
+    // "QAR 1,234.56" and "1,234.56-" still import, while "12abc34" is rejected
+    // instead of silently becoming 1234.
+    let (Some(first), Some(last)) = (
+        trimmed.find(|c: char| c.is_ascii_digit()),
+        trimmed.rfind(|c: char| c.is_ascii_digit()),
+    ) else {
         return Ok(None);
+    };
+    let core = &trimmed[first..=last];
+    if !core.chars().all(|c| c.is_ascii_digit() || c == '.' || c == ',') {
+        return Err(AppError::Validation(format!("Unreadable amount '{raw}'.")));
     }
+    let decoration = format!("{}{}", &trimmed[..first], &trimmed[last + 1..]);
+    let negative =
+        decoration.contains('-') || (decoration.contains('(') && decoration.contains(')'));
+
+    let mut cleaned = core.to_string();
 
     match separator {
         "dot" => cleaned.retain(|c| c != ','),
@@ -1624,6 +1635,26 @@ mod tests {
             Some(Decimal::from_str("-12.50").unwrap())
         );
         assert_eq!(parse_money("abc", "auto").unwrap(), None);
+    }
+
+    #[test]
+    fn keeps_currency_decoration_but_rejects_embedded_garbage() {
+        assert_eq!(
+            parse_money("QAR 1,234.56", "auto").unwrap(),
+            Some(Decimal::from_str("1234.56").unwrap())
+        );
+        assert_eq!(
+            parse_money("$1,234.56-", "auto").unwrap(),
+            Some(Decimal::from_str("-1234.56").unwrap())
+        );
+        assert_eq!(
+            parse_money("1.234,56 QR", "auto").unwrap(),
+            Some(Decimal::from_str("1234.56").unwrap())
+        );
+        assert!(parse_money("12abc34", "auto").is_err());
+        assert!(parse_money("1x2.50", "auto").is_err());
+        assert!(parse_money("1,234.56-78", "auto").is_err());
+        assert_eq!(parse_money("-", "auto").unwrap(), None);
     }
 
     #[test]

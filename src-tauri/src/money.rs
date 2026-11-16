@@ -24,27 +24,100 @@ impl MoneyView {
     }
 }
 
-pub fn pow10(exponent: u32) -> i64 {
-    10i64.pow(exponent)
+pub fn pow10(exponent: u32) -> AppResult<i64> {
+    10i64.checked_pow(exponent)
+        .ok_or_else(|| AppError::Validation("Currency exponent is not supported.".into()))
+}
+
+/// Validate a human-entered decimal and return it in a canonical form that
+/// `Decimal::from_str` accepts. Characters are never stripped: grouping commas
+/// are allowed only in groups of three, there may be one decimal point, and the
+/// sign may appear only at the front. Anything else is rejected outright.
+fn normalize_number(input: &str) -> Option<String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let (sign, rest) = match trimmed.as_bytes()[0] {
+        b'-' => ("-", &trimmed[1..]),
+        b'+' => ("", &trimmed[1..]),
+        _ => ("", trimmed),
+    };
+    if rest.is_empty() {
+        return None;
+    }
+
+    let mut parts = rest.split('.');
+    let whole = parts.next()?;
+    let fraction = parts.next();
+    if parts.next().is_some() {
+        return None;
+    }
+    if let Some(frac) = fraction {
+        if frac.is_empty() || !frac.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+    }
+
+    // A bare fraction such as ".5" is unambiguous and becomes "0.5".
+    let whole_digits = if whole.is_empty() {
+        fraction?;
+        "0".to_string()
+    } else {
+        normalize_whole(whole)?
+    };
+
+    Some(match fraction {
+        Some(frac) => format!("{sign}{whole_digits}.{frac}"),
+        None => format!("{sign}{whole_digits}"),
+    })
+}
+
+fn normalize_whole(whole: &str) -> Option<String> {
+    if !whole.contains(',') {
+        return if whole.bytes().all(|b| b.is_ascii_digit()) {
+            Some(whole.to_string())
+        } else {
+            None
+        };
+    }
+    let groups: Vec<&str> = whole.split(',').collect();
+    let first = groups[0];
+    if first.is_empty() || first.len() > 3 || !first.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    for group in &groups[1..] {
+        if group.len() != 3 || !group.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+    }
+    Some(groups.concat())
+}
+
+/// Parse a strictly validated decimal. No floating point is involved.
+pub fn parse_decimal(input: &str) -> AppResult<Decimal> {
+    let normalized = normalize_number(input)
+        .ok_or_else(|| AppError::Validation(format!("'{input}' is not a valid number.")))?;
+    Decimal::from_str(&normalized)
+        .map_err(|_| AppError::Validation(format!("'{input}' is not a valid number.")))
 }
 
 /// Parse a human-entered amount into minor units using half-away-from-zero rounding.
-/// Input is never evaluated as floating point.
+/// Input is never evaluated as floating point, and invalid characters are never
+/// silently removed.
 pub fn parse_amount(input: &str, exponent: u32) -> AppResult<i64> {
-    let cleaned: String = input
-        .chars()
-        .filter(|c| c.is_ascii_digit() || *c == '.' || *c == '-' || *c == '+')
-        .collect();
-    if cleaned.trim().is_empty() {
+    if input.trim().is_empty() {
         return Err(AppError::Validation("Enter an amount.".into()));
     }
-    let value = Decimal::from_str(&cleaned)
+    let value = parse_decimal(input)
         .map_err(|_| AppError::Validation(format!("'{input}' is not a valid amount.")))?;
     amount_to_minor(value, exponent)
 }
 
 pub fn amount_to_minor(value: Decimal, exponent: u32) -> AppResult<i64> {
-    let scaled = value * Decimal::from(pow10(exponent));
+    let scaled = value
+        .checked_mul(Decimal::from(pow10(exponent)?))
+        .ok_or_else(|| AppError::Validation("Amount is too large.".into()))?;
     let rounded = scaled.round_dp_with_strategy(0, RoundingStrategy::MidpointAwayFromZero);
     rounded
         .try_into()
@@ -56,11 +129,7 @@ pub fn to_decimal(minor: i64, exponent: u32) -> Decimal {
 }
 
 pub fn parse_rate(input: &str) -> AppResult<Decimal> {
-    let cleaned: String = input
-        .chars()
-        .filter(|c| c.is_ascii_digit() || *c == '.' || *c == '-' || *c == '+')
-        .collect();
-    let rate = Decimal::from_str(&cleaned)
+    let rate = parse_decimal(input)
         .map_err(|_| AppError::Validation(format!("'{input}' is not a valid exchange rate.")))?;
     if rate <= Decimal::ZERO {
         return Err(AppError::Validation("Exchange rate must be greater than zero.".into()));
@@ -73,24 +142,24 @@ pub fn rate_to_string(rate: Decimal) -> String {
 }
 
 /// Convert minor units between currencies: 1 unit of `from` = `rate` units of `to`.
+/// Overflow is reported rather than saturated, so a broken rate can never turn
+/// into a silently wrong balance.
 pub fn convert_minor(
     amount_minor: i64,
     from_exp: u32,
     to_exp: u32,
     rate: Decimal,
-) -> i64 {
-    let value = to_decimal(amount_minor, from_exp) * rate;
-    let scaled = value * Decimal::from(pow10(to_exp));
+) -> AppResult<i64> {
+    let value = to_decimal(amount_minor, from_exp)
+        .checked_mul(rate)
+        .ok_or_else(|| AppError::Validation("Converted amount is too large.".into()))?;
+    let scaled = value
+        .checked_mul(Decimal::from(pow10(to_exp)?))
+        .ok_or_else(|| AppError::Validation("Converted amount is too large.".into()))?;
     scaled
         .round_dp_with_strategy(0, RoundingStrategy::MidpointAwayFromZero)
         .to_i64()
-        .unwrap_or_else(|| {
-            if amount_minor < 0 {
-                i64::MIN
-            } else {
-                i64::MAX
-            }
-        })
+        .ok_or_else(|| AppError::Validation("Converted amount is too large.".into()))
 }
 
 pub fn format_amount(minor: i64, exponent: u32) -> String {
@@ -156,9 +225,9 @@ mod tests {
     #[test]
     fn converts_without_floating_point() {
         let rate = parse_rate("3.64").unwrap();
-        assert_eq!(convert_minor(12345, 2, 2, rate), 44936);
+        assert_eq!(convert_minor(12345, 2, 2, rate).unwrap(), 44936);
         let rate = parse_rate("0.274725").unwrap();
-        assert_eq!(convert_minor(10000, 2, 2, rate), 2747);
+        assert_eq!(convert_minor(10000, 2, 2, rate).unwrap(), 2747);
     }
 
     #[test]
@@ -167,6 +236,42 @@ mod tests {
         assert!(parse_amount("abc", 2).is_err());
         assert!(parse_rate("0").is_err());
         assert!(parse_rate("-1.2").is_err());
+    }
+
+    #[test]
+    fn accepts_well_formed_amounts() {
+        assert_eq!(parse_amount("1,234,567.89", 2).unwrap(), 123456789);
+        assert_eq!(parse_amount("  42.10  ", 2).unwrap(), 4210);
+        assert_eq!(parse_amount(".5", 2).unwrap(), 50);
+        assert_eq!(parse_amount("-.5", 2).unwrap(), -50);
+        assert_eq!(parse_amount("+12.34", 2).unwrap(), 1234);
+        assert_eq!(parse_amount("1,000", 0).unwrap(), 1000);
+        assert_eq!(parse_rate("3.6400").unwrap(), Decimal::from_str("3.64").unwrap());
+    }
+
+    #[test]
+    fn never_strips_invalid_characters() {
+        for bad in [
+            "12abc34", "1,23", "12,34.56", "1,2345", "1,234,", ",123", "1.2.3", "$100", "100 USD",
+            "1 234", "1e3", "1.", "-", "+", "--1", "1,-234", "NaN", "inf", "1_000",
+        ] {
+            assert!(parse_amount(bad, 2).is_err(), "should reject {bad:?}");
+            assert!(parse_rate(bad).is_err(), "rate should reject {bad:?}");
+        }
+        assert_eq!(parse_amount("1,234.56", 2).unwrap(), 123456);
+    }
+
+    #[test]
+    fn rejects_out_of_range_amounts_instead_of_saturating() {
+        assert!(parse_amount("99999999999999999999999", 2).is_err());
+        assert!(amount_to_minor(Decimal::MAX, 2).is_err());
+        assert!(pow10(20).is_err());
+        assert_eq!(pow10(3).unwrap(), 1000);
+        let huge = Decimal::from(1_000_000);
+        assert!(convert_minor(i64::MAX, 2, 2, huge).is_err());
+        assert!(convert_minor(i64::MIN, 2, 2, huge).is_err());
+        // A value that still fits keeps working exactly.
+        assert_eq!(convert_minor(i64::MAX, 2, 2, Decimal::ONE).unwrap(), i64::MAX);
     }
 
     #[test]

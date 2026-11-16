@@ -93,7 +93,9 @@ scripts\dev.bat
 - **Key:** a random 256-bit key generated locally and stored in Windows Credential Manager under the
   service `rawjan-finance`. The key is never written into the database file or the repository.
 - **Money:** stored and computed as integer minor units with `rust_decimal` where rates are involved.
-  The frontend never performs monetary arithmetic; it receives display-ready strings from Rust.
+  Amounts and rates are parsed with a strict grammar (invalid characters are rejected, never
+  stripped) and conversions use checked arithmetic that reports overflow instead of saturating. The
+  frontend never performs monetary arithmetic; it receives display-ready strings from Rust.
 - **Original values:** transactions keep their original currency and amount, plus the historical FX
   snapshot and base-currency amount used for reports.
 - **Audit trail:** mutations write local audit events. Posted ledger entries are reversed, not edited.
@@ -157,9 +159,9 @@ Supported formats: CSV, XLSX (first worksheet), OFX and QIF.
 
 ## Testing
 
-Backend: 90 Rust tests covering money parsing, ledger balance, reversals, budgets, goals, investments,
-liabilities, net worth, analytics, income reporting, calendar, journal, health, FI, lab, imports,
-encrypted exports and legacy export compatibility.
+Backend: 94 Rust tests covering strict money parsing and overflow, ledger balance, reversals,
+budgets, goals, investments, liabilities, net worth, analytics, income reporting, calendar, journal,
+health, FI, lab, imports, encrypted exports and legacy export compatibility.
 
 ```bat
 scripts\cargo-env.bat test
@@ -198,6 +200,7 @@ src-tauri/src/services/  Ledger, reports, imports, backups and domain logic
 src-tauri/migrations/    Forward-only schema
 brand/               Brand SVG assets
 docs/screenshots/    Screenshots captured from a disposable demo vault
+docs/AUDIT.md        Architecture, known risks and the phased engineering plan
 scripts/             Cargo/VC++ environment wrappers
 ```
 
