@@ -82,6 +82,33 @@ These are shown honestly in the app instead of being faked:
 Remaining risks, limitations and the phased improvement plan are tracked in
 [docs/AUDIT.md](docs/AUDIT.md).
 
+## How the numbers stay honest
+
+Every displayed figure follows written rules, applied identically wherever it appears:
+
+- **Money is integer minor units end to end.** No floating point touches amounts; `rust_decimal`
+  handles rates and scaling. The frontend renders strings formatted in Rust and never re-computes.
+- **Strict input.** Amounts and rates use one grammar (sign, digits, grouping commas, one decimal
+  point). `12abc34` is rejected — never silently read as `1234`.
+- **Checked arithmetic.** Sums, conversions and projections report overflow as an error instead of
+  wrapping or saturating to a wrong number.
+- **Counting is defined per metric.** "Income entries" counts only effective income and dividend
+  rows. Expenses count expense/fee rows, net of refunds. Transfers, investment moves, openings and
+  adjustments are general activity: never income, never spending. Pending, draft and reversed rows
+  never count in reports.
+- **Percentages describe the whole.** Category shares are computed against the complete eligible
+  total before any top-N display limit, in Rust.
+- **No invented conversions.** When no exchange rate exists for a date, the amount is excluded and
+  the currency is named as missing. Budgets in a foreign currency show "unavailable" rather than a
+  substituted number.
+- **Expectations are dated, not assumed.** Expected income counts only scheduled payouts that fall
+  inside the selected range; future receipts never rewrite a historical report, and schedules that
+  cannot be placed honestly (weekly, irregular) are not estimated at all.
+- **Corrections are reversals.** Posted rows are immutable; reversing creates a linked opposite
+  entry, so history stays auditable.
+- **The ledger polices itself.** Every transaction's debits equal its credits at write time, and the
+  standing check in Settings → Vault & data re-verifies the whole vault at any time.
+
 ## Requirements
 
 - Windows 10/11 (WebView2 is included with current Windows; the installer handles the rest)
@@ -248,6 +275,26 @@ scripts/             Cargo/VC++ environment wrappers
 Rawjan has no telemetry, no analytics SDK, no cloud calls and no third-party network requests at
 runtime. Statement files are read locally. The only network access in the build is whatever you
 explicitly configure outside the app; none is configured.
+
+## Release history
+
+**v0.1.0 — November 2026.** First public release. Full module set: double-entry ledger, dashboard,
+transactions (splits, transfers, refunds, reversals, duplicates), income reporting with
+expected-versus-received, accounts, budgets, savings goals, investments, liabilities, net worth,
+analytics, calendar, journal, financial lab, FI calculator, health score, statement imports,
+verified backups and encrypted exports.
+
+The release line was then hardened before and after publication, in the same version:
+
+- a full engineering audit ([`RAWJAN_COMPLETE_APPLICATION_AUDIT.md`](RAWJAN_COMPLETE_APPLICATION_AUDIT.md),
+  [`docs/AUDIT.md`](docs/AUDIT.md)) with every confirmed finding fixed and regression-tested;
+- strict money parsing and checked arithmetic throughout;
+- atomic financial writes (transaction edits, liability payments, account opening, import commits);
+- corrected income counts, category percentages, budget FX handling and income scheduling;
+- schema v2: money CHECK constraints, unique daily valuations, 22 query indexes;
+- key-handling safety (a malformed credential entry can never silently rotate the vault key);
+- CSV report exports, the standing ledger-invariant check, and a CI pipeline;
+- accessibility and display-honesty fixes across all screens.
 
 ## License
 
